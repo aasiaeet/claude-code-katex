@@ -27,18 +27,16 @@ level2() {
 
   # Canonical L2: the v2 torture harness renders the real shipping bundle through
   # Claude Code's actual react-markdown -> remark-math -> rehype-katex chain.
-  # (The legacy test-ui/*.spec.js suite tests the removed v1 DOM post-processor
-  # and is intentionally NOT run here — see docker/README.md.)
-  log "Torture harness (v2-spike/test.html + v2-spike/test-macros.html)"
+  log "Torture harness (test/harness/rendering.html + test/harness/macros.html)"
   python3 -m http.server "$HARNESS_PORT" --directory /app >/tmp/harness.log 2>&1 &
   local srv=$!
   trap 'kill "$srv" 2>/dev/null || true' RETURN
   # give the static server a moment
   for _ in $(seq 1 20); do
-    curl -sf "http://127.0.0.1:${HARNESS_PORT}/v2-spike/test.html" -o /dev/null && break
+    curl -sf "http://127.0.0.1:${HARNESS_PORT}/test/harness/rendering.html" -o /dev/null && break
     sleep 0.25
   done
-  HARNESS_URLS="http://127.0.0.1:${HARNESS_PORT}/v2-spike/test.html,http://127.0.0.1:${HARNESS_PORT}/v2-spike/test-macros.html" \
+  HARNESS_URLS="http://127.0.0.1:${HARNESS_PORT}/test/harness/rendering.html,http://127.0.0.1:${HARNESS_PORT}/test/harness/macros.html" \
     node docker/run-harness.js
 }
 

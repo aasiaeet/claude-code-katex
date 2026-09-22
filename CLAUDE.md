@@ -41,9 +41,9 @@ only the webview bundle (an isolated browser context) is patched.
 
 ## User macros — `macro-ingest.js`
 
-Shared by both sides and therefore at the repo root, not in `v2-spike/`:
-`.vscodeignore` excludes `v2-spike/**`, and `extension.js` requires this module
-at runtime. `entry.js` bundles it for the webview; `extension.js` requires it
+Shared by both sides and therefore at the repo root, not in `src/webview/`:
+`.vscodeignore` excludes `src/**`, and `extension.js` requires this module at
+runtime. `src/webview/entry.js` bundles it for the webview; `extension.js` requires it
 (with the UMD `vendor/katex.min.js`, which loads in Node) only to build the
 report shown in the status popup — that require is fail-soft, since the webview
 does its own ingestion.
@@ -67,7 +67,7 @@ so a harness must set them before the bundle script tag; and an undefined macro
 does not produce `.katex-error` — KaTeX renders it as red text
 (`mathcolor="#cc0000"`), which is what issue #15 reports seeing.
 
-## The math pipeline — `v2-spike/entry.js`
+## The math pipeline — `src/webview/entry.js`
 
 `remark-math` only recognizes `$...$` / `$$...$$`. `remarkBracketMath` wraps the
 Markdown parser to normalize the raw source before micromark runs:
@@ -93,7 +93,7 @@ npm run build:bundle
 ```
 
 (esbuild IIFE; KaTeX is externalized to `window.katex` via
-`v2-spike/katex-global-shim.js`.)
+`src/webview/katex-global-shim.js`.)
 
 ## Where Claude Code lives
 
@@ -152,16 +152,16 @@ directly; `npm test` can hit path issues).
 
 ### Level 2 — rendering harness (browser + network, no auth)
 
-`v2-spike/test.html` renders the real shipping bundle
+`test/harness/rendering.html` renders the real shipping bundle
 (`vendor/remark-math-bundle.js`) through Claude Code's actual plugin chain
 (`react-markdown` → `remark-math` → `rehype-katex`) and records a PASS/FAIL per
 case on `window.__RESULTS` (`window.__DONE` flags completion). It pulls React
 from a CDN, so it needs network. In the container (`docker run --rm img 2`),
 `docker/run-harness.js` serves the repo, drives the page headless, and gates on
-the results. Add a case to `test.html` for every rendering bug you fix.
+the results. Add a case to `rendering.html` for every rendering bug you fix.
 
-`v2-spike/test-macros.html` is the same harness with a user macro payload set
-before the bundle loads. Keep `test.html` macro-free: it doubles as the guard
+`test/harness/macros.html` is the same harness with a user macro payload set
+before the bundle loads. Keep `rendering.html` macro-free: it doubles as the guard
 that configuring no macros changes nothing. `run-harness.js` drives both pages
 (`HARNESS_URLS`, comma-separated; the older single-page `HARNESS_URL` still
 works and expands to both).
@@ -212,8 +212,8 @@ needs the full code-server + Claude Code + auth stack the image provides.
 ## Submitting changes
 
 - Rebuild and commit `vendor/remark-math-bundle.js` whenever you change
-  `entry.js`.
+  `src/webview/entry.js`.
 - Run levels 1–2 before committing; run level 3 for rendering changes.
-- Add a `v2-spike/test.html` regression case for any bug you fix.
+- Add a `test/harness/rendering.html` regression case for any bug you fix.
 - Keep commit messages in the existing style (`fix:`, `feat:`, `test:`,
   `docs:`, …).

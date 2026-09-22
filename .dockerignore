@@ -10,6 +10,7 @@ playwright-report
 # VCS / local noise.
 .git
 .gitignore
+.claude
 *.log
 .DS_Store
 

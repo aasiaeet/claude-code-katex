@@ -1,4 +1,4 @@
-// v2 webview bundle entry.
+// Webview math-pipeline bundle entry.
 //
 // Bundles the remark-math + rehype-katex pipeline and exposes the three
 // plugins as globals. The extension's patch injects them into Claude Code's
@@ -17,7 +17,7 @@
 // already defines window.katex.
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
-import { ingestMacros } from '../macro-ingest.js';
+import { ingestMacros } from '../../macro-ingest.js';
 
 // Escape every single `$` that is NOT part of a valid inline-math pair, so
 // currency ($100, $5M, "$50-$100") stays literal while real math keeps working
@@ -308,5 +308,5 @@ window.__remarkMath = remarkMath && remarkMath.default ? remarkMath.default : re
 window.__rehypeKatex = rehypeKatexWithCrossrefs;
 window.__remarkBracketMath = remarkBracketMath;
 window.__KATEX_V2_LOADED = true;
-console.log('[Claude Code LaTeX v2] math pipeline loaded:',
+console.log('[Claude Code LaTeX] math pipeline loaded:',
   typeof window.__remarkMath, typeof window.__rehypeKatex, typeof window.__remarkBracketMath);

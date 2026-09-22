@@ -1,8 +1,8 @@
 node_modules/
 *.vsix
 .env
+.claude/
 test-results/
 .playwright-mcp/
-test-ui/react-harness-bundle.js
 claude-code-latex-demo.mp4
 .DS_Store

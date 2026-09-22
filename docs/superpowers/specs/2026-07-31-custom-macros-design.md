@@ -2,7 +2,7 @@
 
 Issue: [#15 — Support for Custom Macros](https://github.com/MahammadNuriyev62/claude-code-katex/issues/15)
 Date: 2026-07-31
-Status: approved, pending implementation plan
+Status: implemented
 
 ## Problem
 
@@ -14,7 +14,7 @@ currently passes only its own three cross-referencing macros.
 ## What this actually is
 
 The feature is KaTeX's `macros` option — about three lines at the existing
-merge point in `v2-spike/entry.js` (`rehypeKatexWithCrossrefs`). Everything
+merge point in `src/webview/entry.js` (`rehypeKatexWithCrossrefs`). Everything
 else in this document is *delivery* (the webview is a sandboxed browser
 context that cannot read the filesystem) and *robustness*. Keeping that
 proportion in mind is the point: the renderer change is trivial, so all the
@@ -138,9 +138,9 @@ into `entry.js` for the webview and `require`d by `extension.js` (the vendored
 the report shown in VS Code. One implementation, two callers, fully unit
 testable in jest against the exact KaTeX build that ships.
 
-It sits at the repo root rather than in `v2-spike/`: `.vscodeignore` excludes
-`v2-spike/**`, and the extension requires this module at runtime, so a copy
-under `v2-spike/` would not ship. The extension-side require is also fail-soft
+It sits at the repo root rather than in `src/webview/`: `.vscodeignore` excludes
+`src/**`, and the extension requires this module at runtime, so a copy under
+`src/webview/` would not ship. The extension-side require is also fail-soft
 — it only powers the report, and the webview ingests independently.
 
 ```js
@@ -277,9 +277,9 @@ Additions to `extension.test.js`:
 
 ### Level 2 — rendering harness
 
-`v2-spike/test.html` stays **preamble-free**, which is itself the regression
+`test/harness/rendering.html` stays **preamble-free**, which is itself the regression
 guard that the feature changes nothing when unconfigured. A new
-`v2-spike/test-macros.html` sets `window.__KATEX_USER_PREAMBLE` /
+`test/harness/macros.html` sets `window.__KATEX_USER_PREAMBLE` /
 `window.__KATEX_USER_MACROS` *before* loading the shipping bundle (ingestion is
 load-time) and adds cases:
 
@@ -291,7 +291,7 @@ load-time) and adds cases:
   leaves every formula and all surrounding markdown rendering.
 
 `docker/run-harness.js` is generalized to drive both pages and aggregate their
-results; the trusted-path Ctrl+C copy check stays attached to `test.html`.
+results; the trusted-path Ctrl+C copy check stays attached to `rendering.html`.
 
 One trap found while building this: an undefined macro does **not** produce a
 `.katex-error` element. KaTeX renders it as red text (`mathcolor="#cc0000"`) —

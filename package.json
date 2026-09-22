@@ -79,7 +79,7 @@
   },
   "scripts": {
     "test": "jest",
-    "build:bundle": "esbuild v2-spike/entry.js --bundle --format=iife --minify --alias:katex=./v2-spike/katex-global-shim.js --outfile=vendor/remark-math-bundle.js",
+    "build:bundle": "esbuild src/webview/entry.js --bundle --format=iife --minify --alias:katex=./src/webview/katex-global-shim.js --outfile=vendor/remark-math-bundle.js",
     "vscode:uninstall": "node ./uninstall-hook.js"
   },
   "extensionDependencies": [
@@ -99,7 +99,6 @@
     "@playwright/test": "^1.58.2",
     "esbuild": "^0.25.0",
     "jest": "^30.3.0",
-    "katex": "^0.16.11",
     "rehype-katex": "^7.0.1",
     "remark-math": "^6.0.0"
   }

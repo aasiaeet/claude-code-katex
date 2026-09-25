@@ -45,7 +45,8 @@ async function drag(page, a, b) {
 const composerText = (page) => page.$eval('[aria-label="Message input"]', (el) => el.textContent); // what Claude Code reads
 
 const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 900, height: 800 } });
+const context = await browser.newContext({ viewport: { width: 900, height: 800 }, permissions: ['clipboard-read', 'clipboard-write'] });
+const page = await context.newPage();
 page.on('pageerror', (e) => { console.log('PAGE ERROR', e.message); failures++; });
 await page.goto(url);
 
@@ -55,13 +56,23 @@ await page.goto(url);
   const b = await point(page, '#p1 .katex:first-of-type .katex-html', { edge: 'mid' });
   await drag(page, a, b);
   check('pop-up opens on selection', await page.$('.cca-pop') !== null, 'no .cca-pop');
-  const box = await page.$eval('.cca-pop textarea', (t) => ({ w: t.offsetWidth, rows: t.rows, buttons: document.querySelectorAll('.cca-pop button').length }));
-  check('one-line, 240px box, no buttons', box.w === 240 && box.rows === 1 && box.buttons === 0, JSON.stringify(box));
+  const box = await page.$eval('.cca-pop textarea', (t) => ({
+    w: t.offsetWidth, rows: t.rows, placeholder: t.placeholder,
+    radius: getComputedStyle(t.closest('.cca-pop')).borderRadius,
+    visibleButtons: [...document.querySelectorAll('.cca-pop button')].filter((b) => b.offsetParent).length,
+  }));
+  check('one-line 240px box in a rounded card, no buttons before typing',
+    box.w === 240 && box.rows === 1 && box.radius === '12px' && box.visibleButtons === 0 &&
+    box.placeholder === 'Add an optional comment\u2026', JSON.stringify(box));
   const ctrlC = await page.evaluate(() => window.getSelection().toString().length > 0);
   check('message selection survives while pop-up is open (Ctrl+C still works)', ctrlC, 'selection collapsed');
   await page.keyboard.type('why this normalizer?');               // first key moves focus into the note
   const note = await page.$eval('.cca-pop textarea', (t) => t.value);
   check('typing goes into the note', note === 'why this normalizer?', JSON.stringify(note));
+  const ok = await page.$eval('.cca-ok', (b) => ({ shown: !!b.offsetParent, bg: getComputedStyle(b).backgroundColor,
+    fg: getComputedStyle(b).color, svg: !!b.querySelector('svg path') }));
+  check('check button appears once there is text: black, thin white check',
+    ok.shown && ok.bg === 'rgb(0, 0, 0)' && ok.fg === 'rgb(255, 255, 255)' && ok.svg, JSON.stringify(ok));
   await page.keyboard.press('Shift+Enter');
   await page.keyboard.type('second line');
   const grown = await page.$eval('.cca-pop textarea', (t) => t.offsetHeight > t.scrollHeight - 4 && t.value.includes('\n'));
@@ -84,7 +95,8 @@ await page.goto(url);
   await drag(page, a, b);
   await page.click('.cca-pop textarea');
   await page.keyboard.type('check this identity');
-  await page.keyboard.press('Enter');
+  await page.click('.cca-ok');
+  check('the check button adds the note', await page.$('.cca-pop') === null, 'still open');
   const text = await composerText(page);
   const second = text.slice(text.indexOf('Annotation 2:')).trim();
   check('exactly one blank line between annotations', /normalizer\?\nsecond line\n\nAnnotation 2:/.test(text), JSON.stringify(text));
@@ -138,12 +150,30 @@ await page.goto(url);
   check('no pop-up on the user\'s own message', await page.$('.cca-pop') === null, 'pop-up opened');
 }
 
-// 4. Esc cancels without touching the prompt box.
+// 4. Esc cancels without touching the prompt box. On the way: the check
+//    button hides again when the text is erased, turns white in dark themes,
+//    and a paste (how many dictation tools deliver text) lands in the note.
 {
   const before = await composerText(page);
   const a = await point(page, '#p3', { char: 0 });
   const b = await point(page, '#p3', { char: 12 });
   await drag(page, a, b);
+  await page.evaluate(() => navigator.clipboard.writeText('pasted by dictation'));
+  await page.keyboard.press('Control+V');
+  const pasted = await page.$eval('.cca-pop textarea', (t) => ({ v: t.value, focused: document.activeElement === t }));
+  check('Ctrl+V pastes into the note', pasted.v === 'pasted by dictation' && pasted.focused, JSON.stringify(pasted));
+  const dark = await page.evaluate(() => {
+    document.body.classList.add('vscode-dark');
+    const b = document.querySelector('.cca-ok');
+    const r = { bg: getComputedStyle(b).backgroundColor, fg: getComputedStyle(b).color };
+    document.body.classList.remove('vscode-dark');
+    return r;
+  });
+  check('check button is white with a dark check in dark themes',
+    dark.bg === 'rgb(255, 255, 255)' && dark.fg === 'rgb(0, 0, 0)', JSON.stringify(dark));
+  await page.keyboard.press('Control+A');
+  await page.keyboard.press('Backspace');
+  check('check button hides when the text is erased', await page.$eval('.cca-ok', (b) => !b.offsetParent), 'still shown');
   await page.keyboard.press('Escape');
   check('Esc closes the pop-up', await page.$('.cca-pop') === null, 'still open');
   check('Esc leaves the prompt box unchanged', (await composerText(page)) === before, 'changed');
@@ -183,6 +213,14 @@ const balloon = (n) => page.locator('.cca-badge', { hasText: new RegExp('^' + n 
     return { v: ta && ta.value, focused: document.activeElement === ta };
   });
   check('balloon opens its comment, focused and ready to edit', st.v === 'check this identity' && st.focused, JSON.stringify(st));
+  const card = await page.evaluate(() => ({
+    buttons: [...document.querySelectorAll('.cca-pop button')].map((b) => b.getAttribute('aria-label') || b.textContent),
+    save: getComputedStyle(document.querySelector('.cca-save')).backgroundColor,
+    trashIcon: !!document.querySelector('.cca-del svg'),
+  }));
+  check('edit card has delete, Cancel and a black Save',
+    JSON.stringify(card.buttons) === '["Delete annotation","Cancel","Save"]' && card.save === 'rgb(0, 0, 0)' && card.trashIcon,
+    JSON.stringify(card));
   await page.keyboard.press('Control+A');
   await page.keyboard.type('revised comment');
   await page.keyboard.press('Enter');
@@ -196,9 +234,9 @@ const balloon = (n) => page.locator('.cca-badge', { hasText: new RegExp('^' + n 
 {
   await balloon(3).click();
   await page.keyboard.type('now with a comment');
-  await page.keyboard.press('Enter');
+  await page.click('.cca-save');
   const text = await composerText(page);
-  check('comment added to a quote-only note', /revised comment\n\nAnnotation 3:\n> after\nMy comment:\nnow with a comment\s*$/.test(text), JSON.stringify(text));
+  check('comment added to a quote-only note (Save button)', /revised comment\n\nAnnotation 3:\n> after\nMy comment:\nnow with a comment\s*$/.test(text), JSON.stringify(text));
 }
 
 // 7c. The prompt box is the source of truth: a comment edited there by hand
@@ -220,18 +258,33 @@ const balloon = (n) => page.locator('.cca-badge', { hasText: new RegExp('^' + n 
   const text = await composerText(page);
   check('Esc discards the edit', await page.$('.cca-pop') === null && text.includes('typed in the box\n\n') && !text.includes(' more'),
     JSON.stringify(text));
+  await balloon(2).click();
+  await page.keyboard.type(' and more');
+  await page.click('.cca-cancel');
+  const after = await composerText(page);
+  check('Cancel discards the edit', await page.$('.cca-pop') === null && after === text, JSON.stringify(after));
 }
 
-// 8. Emptying a note removes the annotation and renumbers the rest.
+// 8. Emptying a comment keeps the annotation as a bare quote; the trash
+//    button deletes the whole annotation and renumbers the rest.
 {
   await balloon(2).click();
   await page.keyboard.press('Control+A');
   await page.keyboard.press('Backspace');
   await page.keyboard.press('Enter');
   await page.waitForTimeout(50);
-  const text = await composerText(page);
-  check('empty + Enter removes the block and renumbers the next one',
-    text.trimEnd() === 'Annotation 2:\n> after\nMy comment:\nnow with a comment', JSON.stringify(text));
+  let text = await composerText(page);
+  check('empty + Enter keeps the quote, drops the comment',
+    /> Closing\n\nAnnotation 3:/.test(text) && !text.includes('typed in the box') &&
+    (await page.$$eval('.cca-badge', (bs) => bs.length)) === 2, JSON.stringify(text));
+
+  await balloon(2).click();
+  await page.click('.cca-del');
+  await page.waitForTimeout(50);
+  text = await composerText(page);
+  check('delete removes the whole block and renumbers the next one',
+    await page.$('.cca-pop') === null && text.trimEnd() === 'Annotation 2:\n> after\nMy comment:\nnow with a comment',
+    JSON.stringify(text));
   const badges = await page.$$eval('.cca-badge', (bs) => bs.map((b) => b.textContent));
   check('its balloon goes and the next balloon is renumbered', JSON.stringify(badges) === '["2"]', JSON.stringify(badges));
 }

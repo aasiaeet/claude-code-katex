@@ -97,8 +97,8 @@ Two things KaTeX itself cannot do, so neither can this:
 
 Turn on `"claudeCodeKatex.annotate": true` to comment on specific parts of a
 reply. Select text in one of Claude's replies and a one-line note box appears
-over the selection. Type your comment and press Enter; the quote and your
-comment are added to the prompt box:
+over the selection. Type your comment and press Enter (or click the check
+button that appears); the quote and your comment are added to the prompt box:
 
 ```
 Annotation 1:
@@ -115,14 +115,14 @@ cancels, and pressing Enter before typing anything adds the quote alone. The
 your sent message.
 
 Each annotated span keeps a small numbered balloon. Hover it to see your
-comment; click it to edit the comment in place, and Enter rewrites that
-annotation in the prompt box. Emptying the comment and pressing Enter removes
-the annotation and renumbers the rest. The prompt box stays the source of
+comment; click it to edit the comment in place, and Save (or Enter) rewrites
+that annotation in the prompt box. The trash button deletes the whole
+annotation, quote included, and renumbers the rest. The prompt box stays the source of
 truth: edit a comment there by hand and the balloon shows your edit, delete an
 annotation there and its balloon goes too. Sending the prompt clears them all.
 
-The note box leaves your selection alone until you type, so Ctrl+C still
-copies it. The feature is off by default and changing the setting takes effect
+The note box leaves your selection alone until you type or paste, so Ctrl+C
+still copies it. The feature is off by default and changing the setting takes effect
 right away.
 
 ## How it works

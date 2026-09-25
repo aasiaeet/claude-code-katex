@@ -1,8 +1,8 @@
 /* Annotation pop-up (opt-in, claudeCodeKatex.annotate): select text in a
  * Claude reply, type a note in the pop-up, and the quoted span plus the note
  * are inserted into the prompt box. Each annotated span keeps a numbered
- * balloon; clicking it reopens the note for editing, and an emptied note
- * removes the annotation.
+ * balloon; clicking it reopens the note for editing, with a button to delete
+ * the whole annotation.
  *
  * Plain DOM code prepended to Claude Code's webview bundle. It never touches
  * React state directly: the prompt box is a contentEditable="plaintext-only"
@@ -273,9 +273,10 @@
     var a = popEdit;
     closePop();
     if (a) {
+      // An emptied comment keeps the annotation as a bare quote; deleting
+      // it is the trash button's job.
       if (!composer()) flash('Could not reach the prompt box.');
-      else if (note) editBlock(a.n, note);
-      else removeAnnotation(a);
+      else editBlock(a.n, note);
     } else {
       var n = nextNumber();
       var text = formatNote(n, quoteOf(range), note);
@@ -307,19 +308,64 @@
     ta.style.height = ta.scrollHeight + 2 + 'px';
   }
 
+  var CHECK_SVG = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">' +
+    '<path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.5" ' +
+    'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  var TRASH_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.8 6.5v4.5M9.2 6.5v4.5"/></svg>';
+
+  function button(cls, html, label, onClick) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = cls;
+    b.innerHTML = html;
+    if (label) { b.title = label; b.setAttribute('aria-label', label); }
+    // Keep focus where it is (the note, or the message selection).
+    b.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    b.addEventListener('click', function (e) { e.stopPropagation(); onClick(); });
+    return b;
+  }
+
+  // Adding: a one-line box whose check button shows once there is text.
+  // Editing (from a balloon): the comment, plus delete / Cancel / Save.
   function openPop(range, a) {
     closePop();
     popRange = range;
     popEdit = a || null;
     var initial = a ? commentOf(a.n) : '';
     pop = document.createElement('div');
-    pop.className = 'cca-pop';
+    pop.className = a ? 'cca-pop cca-editing' : 'cca-pop';
     pop.dataset.initial = initial;
+    var field = document.createElement('div');
+    field.className = 'cca-field';
     var ta = document.createElement('textarea');
     ta.rows = 1;
-    ta.placeholder = a ? 'Comment (empty + Enter removes)' : 'Note (Enter to add)';
+    ta.placeholder = 'Add an optional comment\u2026';
     ta.value = initial;
-    pop.appendChild(ta);
+    field.appendChild(ta);
+    pop.appendChild(field);
+    var ok = null;
+    if (a) {
+      var row = document.createElement('div');
+      row.className = 'cca-actions';
+      row.appendChild(button('cca-del', TRASH_SVG, 'Delete annotation', function () {
+        closePop();
+        removeAnnotation(a);
+        paint();
+        placeBadges();
+      }));
+      var spacer = document.createElement('span');
+      spacer.className = 'cca-spacer';
+      row.appendChild(spacer);
+      row.appendChild(button('cca-cancel', 'Cancel', null, closePop));
+      row.appendChild(button('cca-save', 'Save', null, save));
+      pop.appendChild(row);
+    } else {
+      ok = button('cca-ok', CHECK_SVG, 'Add (Enter)', save);
+      ok.hidden = true;
+      field.appendChild(ok);
+    }
     document.body.appendChild(pop);
     ta.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); save(); }
@@ -327,7 +373,11 @@
       e.stopPropagation();
     });
     // Grow with the text; Shift+Enter adds lines.
-    ta.addEventListener('input', function () { autosize(ta); place(); });
+    ta.addEventListener('input', function () {
+      if (ok) ok.hidden = !ta.value.trim();
+      autosize(ta);
+      place();
+    });
     pop.addEventListener('mousedown', function (e) { e.stopPropagation(); });
     pop.addEventListener('mouseup', function (e) { e.stopPropagation(); });
     if (initial) autosize(ta);
@@ -339,8 +389,8 @@
       ta.setSelectionRange(ta.value.length, ta.value.length);
     }
     // When adding, focus stays on the message selection so Ctrl+C still
-    // copies it; the first typed character moves focus into the note (see
-    // onKeyDown).
+    // copies it; the first typed character, or a paste (dictation tools
+    // often paste), moves focus into the note (see onKeyDown).
   }
 
   // --- balloons ---------------------------------------------------------
@@ -473,6 +523,13 @@
     var ta = pop.querySelector('textarea');
     if (document.activeElement === ta) return;
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePop(); return; }
+    var paste = ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'v' || e.key === 'V')) ||
+      (e.shiftKey && e.key === 'Insert');
+    if (paste) {
+      e.stopPropagation();
+      ta.focus(); // the paste now lands in the note
+      return;
+    }
     if (e.ctrlKey || e.metaKey || e.altKey) return; // Ctrl+C etc. act on the selection
     if (e.key === 'Enter' && !e.shiftKey) {
       // Enter before typing anything: add the quote with no note.

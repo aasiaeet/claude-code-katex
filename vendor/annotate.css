@@ -16,7 +16,7 @@
 .cca-pop textarea {
   display: block;
   box-sizing: border-box;
-  width: 190px;
+  width: 240px;
   min-width: 120px;
   max-width: calc(100vw - 32px);
   min-height: calc(1.4em + 10px);
@@ -33,6 +33,25 @@
 }
 .cca-pop textarea:focus {
   border-color: var(--vscode-focusBorder, #007fd4);
+}
+.cca-badge {
+  position: fixed;
+  z-index: 2147482000;
+  box-sizing: border-box;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px 8px 8px 2px;
+  background: #2f81f7;
+  color: #ffffff;
+  font: 600 10px/16px var(--vscode-font-family, sans-serif);
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+.cca-badge:hover {
+  background: #1f6feb;
 }
 .cca-measure {
   position: absolute;
@@ -58,7 +77,7 @@
   background-color: var(--vscode-editor-selectionBackground, rgba(38, 79, 120, 0.8));
 }
 ::highlight(cca-noted) {
-  background-color: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.33));
+  background-color: var(--vscode-editor-selectionBackground, rgba(38, 79, 120, 0.8));
 }
 ::highlight(cca-label) {
   /* Faux bold: a real font-weight would change glyph widths and pull the

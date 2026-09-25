@@ -114,6 +114,13 @@ cancels, and pressing Enter before typing anything adds the quote alone. The
 `Annotation N:` and `My comment:` lines are drawn bold in the prompt box and in
 your sent message.
 
+Each annotated span keeps a small numbered balloon. Hover it to see your
+comment; click it to edit the comment in place, and Enter rewrites that
+annotation in the prompt box. Emptying the comment and pressing Enter removes
+the annotation and renumbers the rest. The prompt box stays the source of
+truth: edit a comment there by hand and the balloon shows your edit, delete an
+annotation there and its balloon goes too. Sending the prompt clears them all.
+
 The note box leaves your selection alone until you type, so Ctrl+C still
 copies it. The feature is off by default and changing the setting takes effect
 right away.

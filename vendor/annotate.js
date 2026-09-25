@@ -1,11 +1,15 @@
 /* Annotation pop-up (opt-in, claudeCodeKatex.annotate): select text in a
  * Claude reply, type a note in the pop-up, and the quoted span plus the note
- * are inserted into the prompt box.
+ * are inserted into the prompt box. Each annotated span keeps a numbered
+ * balloon; clicking it reopens the note for editing, and an emptied note
+ * removes the annotation.
  *
  * Plain DOM code prepended to Claude Code's webview bundle. It never touches
  * React state directly: the prompt box is a contentEditable="plaintext-only"
- * div whose React onInput handler reads textContent, so the note goes in as a
- * text node followed by an input event (see insertIntoComposer). */
+ * div whose React onInput handler reads textContent, so text goes in as text
+ * nodes followed by an input event (see insertIntoComposer). The prompt box
+ * is the single source of truth for the notes; the balloons only point at it
+ * by annotation number. */
 (function () {
   if (window.__CCA_LOADED) return;
   window.__CCA_LOADED = true;
@@ -13,16 +17,18 @@
   var COMPOSER = '[role="textbox"][aria-label="Message input"]';
   // CSS-module class names carry a per-build hash suffix; match on the prefix.
   var SCOPE = '[class*="messagesContainer_"]';
-  var EXCLUDE = '[class*="userMessage_"],[contenteditable],textarea,input,.cca-pop';
+  var EXCLUDE = '[class*="userMessage_"],[contenteditable],textarea,input,.cca-pop,.cca-badge';
   var HL_NOTED = 'cca-noted';
   var HL_PENDING = 'cca-pending';
   var HL_LABEL = 'cca-label';
   // Label lines drawn bold in the prompt box and in sent messages.
   var LABEL_RE = /^(?:Annotation \d+:|My comment:)[ \t]*$/gm;
+  var COMMENT_LINE = /^My comment:[ \t]*$/;
 
   var pop = null;       // the open pop-up, if any
   var popRange = null;  // the range the open pop-up annotates
-  var noted = [];       // ranges already sent to the prompt box
+  var popEdit = null;   // the annotation being edited, or null when adding
+  var annots = [];      // { n, range, badge } for each note in the prompt box
 
   function closestEl(node, sel) {
     var el = node && (node.nodeType === 1 ? node : node.parentElement);
@@ -33,13 +39,16 @@
     return typeof CSS !== 'undefined' && CSS.highlights && typeof Highlight === 'function';
   }
 
+  function connected(range) {
+    return range.startContainer.isConnected && range.endContainer.isConnected;
+  }
+
   function paint() {
     if (!supportsHighlights()) return;
-    noted = noted.filter(function (r) { return r.startContainer.isConnected && r.endContainer.isConnected; });
     var h = new Highlight();
-    noted.forEach(function (r) { h.add(r); });
+    annots.forEach(function (a) { if (connected(a.range)) h.add(a.range); });
     CSS.highlights.set(HL_NOTED, h);
-    if (popRange) CSS.highlights.set(HL_PENDING, new Highlight(popRange));
+    if (popRange && !popEdit) CSS.highlights.set(HL_PENDING, new Highlight(popRange));
     else CSS.highlights.delete(HL_PENDING);
   }
 
@@ -117,11 +126,36 @@
     if (pop) pop.remove();
     pop = null;
     popRange = null;
+    popEdit = null;
     paint();
+  }
+
+  // True when closing the pop-up would throw away typing.
+  function dirty() {
+    if (!pop) return false;
+    return pop.querySelector('textarea').value.trim() !== (pop.dataset.initial || '').trim();
   }
 
   function composer() {
     return document.querySelector(COMPOSER);
+  }
+
+  function composerText() {
+    var box = composer();
+    return box ? box.textContent : '';
+  }
+
+  function caretToEnd(box) {
+    var r = document.createRange();
+    r.selectNodeContents(box);
+    r.collapse(false);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
+
+  function fireInput(box, data) {
+    box.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: data }));
   }
 
   // Claude Code reads the prompt box with textContent, so newlines must be
@@ -146,21 +180,52 @@
     r.deleteContents();
     var node = document.createTextNode(data);
     r.insertNode(node);
-    r.setStartAfter(node);
-    r.collapse(true);
-    var sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(r);
-    box.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: data }));
+    caretToEnd(box);
+    fireInput(box, data);
     return true;
+  }
+
+  // Edits and removals can touch several places at once (renumbering), so
+  // they replace the whole text; Claude Code resets the box the same way.
+  function setComposerText(text) {
+    var box = composer();
+    if (!box) return false;
+    box.focus();
+    box.textContent = text;
+    caretToEnd(box);
+    fireInput(box, text);
+    return true;
+  }
+
+  function headerRe(n) {
+    return new RegExp('^Annotation ' + n + ':[ \\t]*$', 'm');
+  }
+
+  // Block n runs from its header line to the line before the next blank line
+  // (a note never contains one; see cleanNote).
+  function findBlock(text, n) {
+    var m = headerRe(n).exec(text);
+    if (!m) return null;
+    var gap = text.indexOf('\n\n', m.index);
+    var end = gap < 0 ? Math.max(m.index, text.replace(/\s+$/, '').length) : gap;
+    return { start: m.index, end: end, lines: text.slice(m.index, end).split('\n') };
+  }
+
+  function commentOf(n) {
+    var b = findBlock(composerText(), n);
+    if (!b) return '';
+    var i = b.lines.findIndex(function (l) { return COMMENT_LINE.test(l); });
+    return i < 0 ? '' : b.lines.slice(i + 1).join('\n');
+  }
+
+  function cleanNote(note) {
+    return note.trim().replace(/\n[ \t]*\n[\s]*/g, '\n');
   }
 
   // Next number is one past the highest "Annotation N:" already in the
   // prompt box, so deleting or reordering notes before sending is harmless.
   function nextNumber() {
-    var box = composer();
-    var text = box ? box.textContent : '';
-    var re = /^Annotation (\d+):/gm, m, max = 0;
+    var re = /^Annotation (\d+):/gm, m, max = 0, text = composerText();
     while ((m = re.exec(text))) max = Math.max(max, +m[1]);
     return max + 1;
   }
@@ -168,24 +233,65 @@
   function formatNote(n, quote, note) {
     var q = quote.split('\n').map(function (l) { return l ? '> ' + l : '>'; }).join('\n');
     var head = 'Annotation ' + n + ':\n' + q + '\n';
-    return note.trim() ? head + 'My comment:\n' + note.trim() + '\n' : head;
+    note = cleanNote(note);
+    return note ? head + 'My comment:\n' + note + '\n' : head;
+  }
+
+  function editBlock(n, note) {
+    var text = composerText();
+    var b = findBlock(text, n);
+    if (!b) return false;
+    var i = b.lines.findIndex(function (l) { return COMMENT_LINE.test(l); });
+    var head = (i < 0 ? b.lines : b.lines.slice(0, i)).join('\n');
+    var block = note ? head + '\nMy comment:\n' + note : head;
+    return setComposerText(text.slice(0, b.start) + block + text.slice(b.end));
+  }
+
+  function removeAnnotation(a) {
+    var text = composerText();
+    var b = findBlock(text, a.n);
+    if (b) {
+      var before = text.slice(0, b.start).replace(/\s+$/, '');
+      var after = text.slice(b.end).replace(/^\s+/, '');
+      var joined = before && after ? before + '\n\n' + after : before + after;
+      // Close the gap in the numbering. Quote lines start with "> ", so only
+      // real headers match.
+      joined = joined.replace(/^Annotation (\d+):/gm, function (s, k) {
+        return +k > a.n ? 'Annotation ' + (k - 1) + ':' : s;
+      });
+      setComposerText(joined);
+    }
+    annots = annots.filter(function (x) { return x !== a; });
+    a.badge.remove();
+    annots.forEach(function (x) { if (x.n > a.n) x.n--; });
   }
 
   function save() {
     if (!pop || !popRange) return;
-    var note = pop.querySelector('textarea').value;
+    var note = cleanNote(pop.querySelector('textarea').value);
     var range = popRange;
-    var text = formatNote(nextNumber(), quoteOf(range), note);
+    var a = popEdit;
     closePop();
-    if (insertIntoComposer(text)) {
-      noted.push(range);
+    if (a) {
+      if (!composer()) flash('Could not reach the prompt box.');
+      else if (note) editBlock(a.n, note);
+      else removeAnnotation(a);
     } else {
-      // No prompt box, or the browser refused the edit: hand the text over
-      // through the clipboard so nothing typed is lost.
-      try { navigator.clipboard.writeText(text); } catch (e) {}
-      flash('Could not reach the prompt box; the note was copied to the clipboard.');
+      var n = nextNumber();
+      var text = formatNote(n, quoteOf(range), note);
+      if (insertIntoComposer(text)) {
+        a = { n: n, range: range, badge: null };
+        a.badge = makeBadge(a);
+        annots.push(a);
+      } else {
+        // No prompt box: hand the text over through the clipboard so nothing
+        // typed is lost.
+        try { navigator.clipboard.writeText(text); } catch (e) {}
+        flash('Could not reach the prompt box; the note was copied to the clipboard.');
+      }
     }
     paint();
+    placeBadges();
   }
 
   function flash(msg) {
@@ -196,67 +302,97 @@
     setTimeout(function () { t.remove(); }, 3500);
   }
 
-  function openPop(range) {
+  function autosize(ta) {
+    ta.style.height = 'auto';
+    ta.style.height = ta.scrollHeight + 2 + 'px';
+  }
+
+  function openPop(range, a) {
     closePop();
     popRange = range;
+    popEdit = a || null;
+    var initial = a ? commentOf(a.n) : '';
     pop = document.createElement('div');
     pop.className = 'cca-pop';
-    pop.innerHTML = '<textarea rows="1" placeholder="Note (Enter to add)"></textarea>';
+    pop.dataset.initial = initial;
+    var ta = document.createElement('textarea');
+    ta.rows = 1;
+    ta.placeholder = a ? 'Comment (empty + Enter removes)' : 'Note (Enter to add)';
+    ta.value = initial;
+    pop.appendChild(ta);
     document.body.appendChild(pop);
-    var ta = pop.querySelector('textarea');
     ta.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); save(); }
       else if (e.key === 'Escape') { e.preventDefault(); closePop(); }
       e.stopPropagation();
     });
     // Grow with the text; Shift+Enter adds lines.
-    ta.addEventListener('input', function () {
-      ta.style.height = 'auto';
-      ta.style.height = ta.scrollHeight + 2 + 'px';
-      place();
-    });
+    ta.addEventListener('input', function () { autosize(ta); place(); });
     pop.addEventListener('mousedown', function (e) { e.stopPropagation(); });
     pop.addEventListener('mouseup', function (e) { e.stopPropagation(); });
+    if (initial) autosize(ta);
     place();
     paint();
-    // Focus is left on the message selection so Ctrl+C still copies it; the
-    // first typed character moves focus into the note (see onKeyDown).
-  }
-
-  function onMouseUp(e) {
-    if (e.button !== 0) return;
-    // Let the browser finish updating the selection first.
-    setTimeout(function () {
-      var range = annotatableRange();
-      if (!range) return;
-      if (pop && pop.querySelector('textarea').value.trim()) return; // keep a note in progress
-      openPop(range);
-    }, 0);
-  }
-
-  function onMouseDown(e) {
-    if (!pop || pop.contains(e.target)) return;
-    if (pop.querySelector('textarea').value.trim()) return;
-    closePop();
-  }
-
-  // Capture phase, so this runs before any handler in Claude Code's UI that
-  // would redirect typing to the prompt box.
-  function onKeyDown(e) {
-    if (!pop) return;
-    var ta = pop.querySelector('textarea');
-    if (document.activeElement === ta) return;
-    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePop(); return; }
-    if (e.ctrlKey || e.metaKey || e.altKey) return; // Ctrl+C etc. act on the selection
-    if (e.key === 'Enter' && !e.shiftKey) {
-      // Enter before typing anything: add the quote with no note.
-      e.preventDefault();
-      e.stopPropagation();
-      save();
-    } else if (e.key.length === 1) {
-      e.stopPropagation();
-      ta.focus(); // the key's default action now lands in the note
+    if (a) {
+      // Opened from a balloon: there is no selection to keep, so type away.
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
     }
+    // When adding, focus stays on the message selection so Ctrl+C still
+    // copies it; the first typed character moves focus into the note (see
+    // onKeyDown).
+  }
+
+  // --- balloons ---------------------------------------------------------
+
+  function makeBadge(a) {
+    var b = document.createElement('div');
+    b.className = 'cca-badge';
+    b.textContent = String(a.n);
+    // No focus change, no text selection starting on the balloon.
+    b.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    b.addEventListener('mouseup', function (e) { e.stopPropagation(); });
+    b.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (dirty()) return; // a note in progress wins
+      openPop(a.range, a);
+    });
+    b.addEventListener('mouseenter', function () {
+      var c = commentOf(a.n);
+      b.title = c || '(no comment)';
+    });
+    document.body.appendChild(b);
+    return b;
+  }
+
+  // Each balloon floats just above the end of its span, its pointed corner
+  // on the span's last character so it never covers the next word, and hides
+  // when the span scrolls out of the message list.
+  function placeBadges() {
+    if (!annots.length) return;
+    var scope = document.querySelector(SCOPE);
+    var clip = scope ? scope.getBoundingClientRect() : null;
+    annots.forEach(function (a) {
+      var b = a.badge;
+      if (b.textContent !== String(a.n)) b.textContent = String(a.n);
+      var rects = connected(a.range) ? a.range.getClientRects() : [];
+      var last = null;
+      for (var i = rects.length - 1; i >= 0; i--) {
+        if (rects[i].width > 0) { last = rects[i]; break; }
+      }
+      var hidden = !last || (clip && (last.right < clip.left || last.right > clip.right ||
+        last.bottom < clip.top || last.top > clip.bottom));
+      b.style.display = hidden ? 'none' : '';
+      if (hidden) return;
+      b.style.left = last.right - 3 + 'px';
+      b.style.top = last.top - 15 + 'px';
+    });
+  }
+
+  function clearAll() {
+    annots.forEach(function (a) { a.badge.remove(); });
+    annots = [];
+    paint();
   }
 
   // Both surfaces are plain text (the prompt box, and sent messages, which
@@ -284,32 +420,81 @@
     CSS.highlights.set(HL_LABEL, h);
   }
 
-  var labelsQueued = false;
-  function queueLabels() {
-    if (labelsQueued) return;
-    labelsQueued = true;
-    requestAnimationFrame(function () { labelsQueued = false; paintLabels(); });
+  // Reconcile with the prompt box: sending empties it, which clears every
+  // annotation; a header removed or renamed by hand drops its balloon.
+  function sync() {
+    if (annots.length) {
+      var text = composerText();
+      if (!text.trim()) {
+        clearAll();
+      } else {
+        var before = annots.length;
+        annots = annots.filter(function (a) {
+          var keep = headerRe(a.n).test(text);
+          if (!keep) a.badge.remove();
+          return keep;
+        });
+        if (annots.length !== before) paint();
+      }
+    }
+    placeBadges();
+    paintLabels();
+    place();
   }
 
-  // Clear the "already noted" marks once the prompt has been sent, which
-  // empties the prompt box.
-  function onInput(e) {
-    var box = closestEl(e.target, COMPOSER);
-    if (box && !box.textContent.trim() && noted.length) { noted = []; paint(); }
+  var queued = false;
+  function queueSync() {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(function () { queued = false; sync(); });
+  }
+
+  function onMouseUp(e) {
+    if (e.button !== 0) return;
+    // Let the browser finish updating the selection first.
+    setTimeout(function () {
+      var range = annotatableRange();
+      if (!range) return;
+      if (dirty()) return; // keep a note in progress
+      openPop(range);
+    }, 0);
+  }
+
+  function onMouseDown(e) {
+    if (!pop || pop.contains(e.target)) return;
+    if (dirty()) return;
+    closePop();
+  }
+
+  // Capture phase, so this runs before any handler in Claude Code's UI that
+  // would redirect typing to the prompt box.
+  function onKeyDown(e) {
+    if (!pop) return;
+    var ta = pop.querySelector('textarea');
+    if (document.activeElement === ta) return;
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePop(); return; }
+    if (e.ctrlKey || e.metaKey || e.altKey) return; // Ctrl+C etc. act on the selection
+    if (e.key === 'Enter' && !e.shiftKey) {
+      // Enter before typing anything: add the quote with no note.
+      e.preventDefault();
+      e.stopPropagation();
+      save();
+    } else if (e.key.length === 1) {
+      e.stopPropagation();
+      ta.focus(); // the key's default action now lands in the note
+    }
   }
 
   document.addEventListener('mouseup', onMouseUp);
   document.addEventListener('mousedown', onMouseDown, true);
   window.addEventListener('keydown', onKeyDown, true);
-  document.addEventListener('input', onInput, true);
-  window.addEventListener('scroll', place, true);
-  window.addEventListener('resize', place);
-  // Sending a prompt empties the box without an input event in some builds.
-  new MutationObserver(function () {
-    var box = composer();
-    if (box && !box.textContent.trim() && noted.length) { noted = []; paint(); }
-    queueLabels();
-  }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  document.addEventListener('input', queueSync, true);
+  window.addEventListener('scroll', queueSync, true);
+  window.addEventListener('resize', queueSync);
+  // Streaming replies, sending (which empties the prompt box), and edits
+  // typed straight into the prompt box all show up as DOM mutations.
+  new MutationObserver(queueSync).observe(document.documentElement,
+    { childList: true, subtree: true, characterData: true });
 
   window.__CCA = { quoteOf: quoteOf, formatNote: formatNote, insertIntoComposer: insertIntoComposer };
 })();

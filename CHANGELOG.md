@@ -7,7 +7,9 @@
   text in a reply, type a note in the box that pops up over it, and press
   Enter: the quote and the note go into the prompt box as a numbered
   `Annotation N:` block. Math in the selection is quoted as its LaTeX source.
-  With the setting off, which is the default, the patch is unchanged.
+  Each annotated span keeps a numbered balloon: click it to edit or remove
+  the comment in place. With the setting off, which is the default, the patch
+  is unchanged.
 
 ## [2.1.0] - 2026-07-31
 

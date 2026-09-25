@@ -93,6 +93,31 @@ Two things KaTeX itself cannot do, so neither can this:
 - macros with an optional argument, `\newcommand{\x}[2][default]{...}`
 - `\newenvironment`
 
+## Annotating replies
+
+Turn on `"claudeCodeKatex.annotate": true` to comment on specific parts of a
+reply. Select text in one of Claude's replies and a one-line note box appears
+over the selection. Type your comment and press Enter; the quote and your
+comment are added to the prompt box:
+
+```
+Annotation 1:
+> the text you selected
+My comment:
+what you typed
+```
+
+Add as many as you like before sending; they are numbered in order. Selected
+math is quoted as its LaTeX source, and a selection that cuts into an equation
+is widened to the whole equation. Shift+Enter adds a line to the note, Esc
+cancels, and pressing Enter before typing anything adds the quote alone. The
+`Annotation N:` and `My comment:` lines are drawn bold in the prompt box and in
+your sent message.
+
+The note box leaves your selection alone until you type, so Ctrl+C still
+copies it. The feature is off by default and changing the setting takes effect
+right away.
+
 ## How it works
 
 The extension injects `remark-math` and `rehype-katex` into Claude Code's own Markdown rendering pipeline. Math is tokenized *while* Claude Code parses the Markdown — before the parser can alter it — so the LaTeX reaches KaTeX exactly as written. This is what lets backslash-heavy expressions (matrix row breaks `\\`, spacing macros `\,` `\;` `\!`, escaped braces) and multi-line environments render correctly.

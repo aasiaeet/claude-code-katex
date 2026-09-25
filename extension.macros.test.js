@@ -16,7 +16,7 @@ jest.mock('vscode', () => ({
   window: {},
   commands: { registerCommand: jest.fn(), executeCommand: jest.fn() },
   extensions: { getExtension: jest.fn(), onDidChange: jest.fn() },
-  workspace: { getConfiguration: jest.fn(), workspaceFolders: undefined },
+  workspace: { getConfiguration: jest.fn(), onDidChangeConfiguration: jest.fn(() => ({ dispose() {} })), workspaceFolders: undefined },
   env: { openExternal: jest.fn() },
   Uri: { parse: (s) => s },
   StatusBarAlignment: { Left: 1, Right: 2 },

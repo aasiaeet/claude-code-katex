@@ -17,6 +17,7 @@ const mockStatusBarItem = {
 };
 const mockCreateStatusBarItem = jest.fn().mockReturnValue(mockStatusBarItem);
 const mockGetConfiguration = jest.fn();
+const mockOnDidChangeConfiguration = jest.fn().mockReturnValue({ dispose: jest.fn() });
 
 jest.mock('vscode', () => ({
   window: {
@@ -35,6 +36,7 @@ jest.mock('vscode', () => ({
   },
   workspace: {
     getConfiguration: mockGetConfiguration,
+    onDidChangeConfiguration: mockOnDidChangeConfiguration,
     workspaceFolders: undefined,
   },
   env: { openExternal: mockOpenExternal },
@@ -605,10 +607,10 @@ describe('activate', () => {
     expect(mockStatusBarItem.text).toMatch(/LaTeX/);
   });
 
-  test('pushes 6 disposables (4 commands + status bar + onDidChange)', () => {
+  test('pushes 7 disposables (4 commands + annotate setting watcher + status bar + onDidChange)', () => {
     mockGetExtension.mockReturnValue({ extensionPath: extDir });
     activate(context);
-    expect(context.subscriptions.length).toBe(6);
+    expect(context.subscriptions.length).toBe(7);
   });
 
   test('registers an onDidChange watcher', () => {
@@ -1183,5 +1185,88 @@ describe('edge cases', () => {
   test('the patched bundle keeps the marker exactly once', () => {
     applyPatch(extDir, vendorDir);
     expect(readJs().split(PATCH_MARKER).length - 1).toBe(1);
+  });
+});
+
+// ============================================================
+// Annotation pop-up (opt-in, claudeCodeKatex.annotate)
+// ============================================================
+describe('annotation pop-up', () => {
+  const { ensurePatched, hasAnnotate, ANNOTATE_MARKER, ANNOTATE_CSS_BEGIN } = _test;
+
+  beforeEach(() => {
+    setupFakeClaudeCodeExt();
+    setupFakeVendorDir();
+    fs.writeFileSync(path.join(vendorDir, 'annotate.js'), '/* annotate mock */');
+    fs.writeFileSync(path.join(vendorDir, 'annotate.css'), '/* annotate css mock */');
+  });
+
+  test('off by default: no block, no CSS', () => {
+    applyPatch(extDir, vendorDir);
+    expect(hasAnnotate(readJs())).toBe(false);
+    expect(readJs()).not.toContain('annotate mock');
+    expect(readCss()).not.toContain(ANNOTATE_CSS_BEGIN);
+  });
+
+  test('when enabled: block after the math bundle, CSS inside the CSS patch', () => {
+    applyPatch(extDir, vendorDir, undefined, true);
+    const js = readJs();
+    expect(js.indexOf(ANNOTATE_MARKER)).toBeGreaterThan(js.indexOf(_test.BUNDLE_ANCHOR));
+    expect(js.indexOf('/* annotate mock */')).toBeLessThan(js.indexOf('original claude code webview js'));
+    const css = readCss();
+    expect(css).toContain('/* annotate css mock */');
+    expect(css.indexOf(ANNOTATE_CSS_BEGIN)).toBeLessThan(css.indexOf('/* === End KaTeX CSS Patch === */'));
+  });
+
+  test('enabled but the vendor files are missing: patches without the pop-up', () => {
+    fs.unlinkSync(path.join(vendorDir, 'annotate.js'));
+    expect(applyPatch(extDir, vendorDir, undefined, true)).toBe(true);
+    expect(hasAnnotate(readJs())).toBe(false);
+  });
+
+  test('turning it on re-applies the patch once, with the pop-up', () => {
+    applyPatch(extDir, vendorDir);
+    expect(ensurePatched(extDir, vendorDir, undefined, true)).toBe('refreshed');
+    expect(hasAnnotate(readJs())).toBe(true);
+    expect(readJs().split(PATCH_MARKER).length - 1).toBe(1);
+  });
+
+  test('turning it off restores the zero-config patch exactly', () => {
+    applyPatch(extDir, vendorDir);
+    const plainJs = readJs();
+    const plainCss = readCss();
+    ensurePatched(extDir, vendorDir, undefined, true);
+    expect(ensurePatched(extDir, vendorDir, undefined, false)).toBe('refreshed');
+    expect(readJs()).toBe(plainJs);
+    expect(readCss()).toBe(plainCss);
+  });
+
+  test('"current" when the setting matches the applied patch', () => {
+    applyPatch(extDir, vendorDir, undefined, true);
+    expect(ensurePatched(extDir, vendorDir, undefined, true)).toBe('current');
+  });
+
+  test('activate reads the setting and patches with the pop-up', () => {
+    mockGetExtension.mockReturnValue({ extensionPath: extDir });
+    setMacroConfig({ annotate: true });
+    activate({ extensionPath: tmpDir, subscriptions: [] });
+    expect(hasAnnotate(readJs())).toBe(true);
+  });
+
+  test('changing the setting re-patches and reloads the webview', () => {
+    mockGetExtension.mockReturnValue({ extensionPath: extDir });
+    activate({ extensionPath: tmpDir, subscriptions: [] });
+    expect(hasAnnotate(readJs())).toBe(false);
+    const onChange = mockOnDidChangeConfiguration.mock.calls[0][0];
+
+    setMacroConfig({ annotate: true });
+    mockExecuteCommand.mockClear();
+    onChange({ affectsConfiguration: (k) => k === 'claudeCodeKatex.annotate' });
+    expect(hasAnnotate(readJs())).toBe(true);
+    expect(mockExecuteCommand).toHaveBeenCalledWith('workbench.action.webview.reloadWebviewAction');
+
+    mockExecuteCommand.mockClear();
+    onChange({ affectsConfiguration: (k) => k === 'claudeCodeKatex.macros' });
+    expect(mockExecuteCommand).not.toHaveBeenCalled();
   });
 });

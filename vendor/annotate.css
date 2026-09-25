@@ -1,0 +1,68 @@
+/* Annotation pop-up and highlight styles. Colors come from the
+ * VS Code theme variables the webview already receives. */
+.cca-pop {
+  position: fixed;
+  z-index: 2147483000;
+  box-sizing: border-box;
+  padding: 3px;
+  border-radius: 5px;
+  background: var(--vscode-editorWidget-background, #252526);
+  color: var(--vscode-editorWidget-foreground, #cccccc);
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-focusBorder, #454545));
+  box-shadow: 0 4px 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+  font-family: var(--vscode-font-family, sans-serif);
+  font-size: var(--vscode-font-size, 13px);
+}
+.cca-pop textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 190px;
+  min-width: 120px;
+  max-width: calc(100vw - 32px);
+  min-height: calc(1.4em + 10px);
+  max-height: 40vh;
+  resize: both;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: var(--vscode-input-background, #3c3c3c);
+  color: var(--vscode-input-foreground, #cccccc);
+  border: 1px solid var(--vscode-input-border, transparent);
+  font: inherit;
+  line-height: 1.4;
+  outline: none;
+}
+.cca-pop textarea:focus {
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+.cca-measure {
+  position: absolute;
+  left: -99999px;
+  top: 0;
+  width: 800px;
+  white-space: normal;
+}
+.cca-toast {
+  position: fixed;
+  z-index: 2147483000;
+  left: 50%;
+  bottom: 80px;
+  transform: translateX(-50%);
+  max-width: 90vw;
+  padding: 6px 12px;
+  border-radius: 4px;
+  background: var(--vscode-notifications-background, #252526);
+  color: var(--vscode-notifications-foreground, #cccccc);
+  border: 1px solid var(--vscode-notifications-border, #454545);
+}
+::highlight(cca-pending) {
+  background-color: var(--vscode-editor-selectionBackground, rgba(38, 79, 120, 0.8));
+}
+::highlight(cca-noted) {
+  background-color: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.33));
+}
+::highlight(cca-label) {
+  /* Faux bold: a real font-weight would change glyph widths and pull the
+   * prompt box's mirror text out of line with its caret. */
+  color: var(--vscode-textLink-foreground, #3794ff);
+  text-shadow: 0.35px 0 0 var(--vscode-textLink-foreground, #3794ff), -0.35px 0 0 var(--vscode-textLink-foreground, #3794ff);
+}

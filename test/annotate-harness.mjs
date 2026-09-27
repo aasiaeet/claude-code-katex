@@ -71,12 +71,26 @@ await page.goto(url);
   check('typing goes into the note', note === 'why this normalizer?', JSON.stringify(note));
   const ok = await page.$eval('.cca-ok', (b) => ({ shown: !!b.offsetParent, bg: getComputedStyle(b).backgroundColor,
     fg: getComputedStyle(b).color, svg: !!b.querySelector('svg path') }));
+  const inline = await page.evaluate(() => {
+    const pop = document.querySelector('.cca-pop'), ta = pop.querySelector('textarea'), b = pop.querySelector('.cca-ok');
+    const tr = ta.getBoundingClientRect(), br = b.getBoundingClientRect();
+    return { stacked: pop.classList.contains('cca-stacked'), onLine: br.top >= tr.top && br.bottom <= tr.bottom, pad: getComputedStyle(ta).paddingRight };
+  });
+  check('short text: check sits at the right end of the line',
+    !inline.stacked && inline.onLine && inline.pad === '42px', JSON.stringify(inline));
   check('check button appears once there is text: black, thin white check',
     ok.shown && ok.bg === 'rgb(0, 0, 0)' && ok.fg === 'rgb(255, 255, 255)' && ok.svg, JSON.stringify(ok));
   await page.keyboard.press('Shift+Enter');
   await page.keyboard.type('second line');
   const grown = await page.$eval('.cca-pop textarea', (t) => t.offsetHeight > t.scrollHeight - 4 && t.value.includes('\n'));
   check('Shift+Enter adds a line and the box grows to fit', grown, 'did not grow');
+  const stacked = await page.evaluate(() => {
+    const pop = document.querySelector('.cca-pop'), ta = pop.querySelector('textarea'), b = pop.querySelector('.cca-ok');
+    return { stacked: pop.classList.contains('cca-stacked'), below: b.getBoundingClientRect().top >= ta.getBoundingClientRect().bottom,
+      pad: getComputedStyle(ta).paddingRight };
+  });
+  check('multi-line text moves the check to its own row, text gets full width',
+    stacked.stacked && stacked.below && stacked.pad === '8px', JSON.stringify(stacked));
   await page.keyboard.press('Enter');
   const text = await composerText(page);
   const want = 'Annotation 1:\n> density is $p(x \\mid \\mu, \\sigma^2) = \\frac{1}{\\sqrt{2\\pi\\sigma^2}}$\nMy comment:\nwhy this normalizer?\nsecond line';
@@ -171,9 +185,13 @@ await page.goto(url);
   });
   check('check button is white with a dark check in dark themes',
     dark.bg === 'rgb(255, 255, 255)' && dark.fg === 'rgb(0, 0, 0)', JSON.stringify(dark));
+  await page.keyboard.type(' and then a longer sentence that has to wrap');
+  check('typing past the end of the line moves the check to its own row',
+    await page.$eval('.cca-pop', (p) => p.classList.contains('cca-stacked')), 'not stacked');
   await page.keyboard.press('Control+A');
   await page.keyboard.press('Backspace');
-  check('check button hides when the text is erased', await page.$eval('.cca-ok', (b) => !b.offsetParent), 'still shown');
+  check('check button hides when the text is erased',
+    await page.$eval('.cca-ok', (b) => !b.offsetParent && !b.closest('.cca-pop').classList.contains('cca-stacked')), 'still shown');
   await page.keyboard.press('Escape');
   check('Esc closes the pop-up', await page.$('.cca-pop') === null, 'still open');
   check('Esc leaves the prompt box unchanged', (await composerText(page)) === before, 'changed');

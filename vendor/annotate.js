@@ -362,11 +362,31 @@
       row.appendChild(button('cca-save', 'Save', null, save));
       pop.appendChild(row);
     } else {
-      ok = button('cca-ok', CHECK_SVG, 'Add (Enter)', save);
+      ok = document.createElement('div');
+      ok.className = 'cca-okrow';
       ok.hidden = true;
-      field.appendChild(ok);
+      ok.appendChild(button('cca-ok', CHECK_SVG, 'Add (Enter)', save));
+      pop.appendChild(ok);
     }
     document.body.appendChild(pop);
+    ta.style.height = 'auto';
+    var oneLine = ta.scrollHeight;
+    // No button while empty. Short text: the check sits at the right end of
+    // the line. Once the text needs a second line, the check moves to its own
+    // row underneath so the text gets the full width.
+    function layoutOk() {
+      var has = !!ta.value.trim();
+      ok.hidden = !has;
+      pop.classList.remove('cca-stacked');
+      pop.classList.toggle('cca-inline-ok', has);
+      if (has) {
+        ta.style.height = 'auto';
+        if (ta.scrollHeight > oneLine + 1) {
+          pop.classList.remove('cca-inline-ok');
+          pop.classList.add('cca-stacked');
+        }
+      }
+    }
     ta.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); save(); }
       else if (e.key === 'Escape') { e.preventDefault(); closePop(); }
@@ -374,7 +394,7 @@
     });
     // Grow with the text; Shift+Enter adds lines.
     ta.addEventListener('input', function () {
-      if (ok) ok.hidden = !ta.value.trim();
+      if (ok) layoutOk();
       autosize(ta);
       place();
     });

@@ -28,8 +28,7 @@
   min-height: calc(1.4em + 10px);
   max-height: 40vh;
   resize: both;
-  /* Room on the right for the check button, clear of the resize grip. */
-  padding: 4px 42px 4px 8px;
+  padding: 4px 8px;
   border: none;
   border-radius: 8px;
   background: transparent;
@@ -38,8 +37,9 @@
   line-height: 1.4;
   outline: none;
 }
-.cca-pop.cca-editing textarea {
-  padding-right: 8px;
+/* Room on the right for an inline check button, clear of the resize grip. */
+.cca-pop.cca-inline-ok textarea {
+  padding-right: 42px;
 }
 .cca-pop textarea::placeholder {
   color: var(--vscode-input-placeholderForeground, #8b8b8b);
@@ -69,17 +69,26 @@ body.vscode-high-contrast .cca-pop .cca-save {
   color: #000000;
   border-color: #ffffff;
 }
-.cca-pop .cca-ok {
+.cca-okrow {
   position: absolute;
-  top: 4px;
-  right: 16px;
+  top: 8px;
+  right: 20px;
+  display: flex;
+}
+.cca-okrow[hidden] {
+  display: none;
+}
+/* Multi-line: the check gets its own row under the text. */
+.cca-pop.cca-stacked .cca-okrow {
+  position: static;
+  justify-content: flex-end;
+  padding: 2px 4px 2px 0;
+}
+.cca-pop .cca-ok {
   width: 20px;
   height: 20px;
   padding: 0;
   border-radius: 50%;
-}
-.cca-pop .cca-ok[hidden] {
-  display: none;
 }
 .cca-actions {
   display: flex;

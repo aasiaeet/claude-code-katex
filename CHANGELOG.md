@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **File links** (opt-in, `claudeCodeKatex.fileLinks`). Hovering a file link
+  in a reply shows its full path, and right-click offers Open, Open with
+  system app, Reveal in sidebar, Open containing folder, Copy full path and
+  Copy link. A PDF, image or Office file that Claude Code opens as text is
+  reopened in its proper viewer. With the setting off, which is the default,
+  the patch is unchanged.
+
 ## [2.1.0] - 2026-07-31
 
 ### Added

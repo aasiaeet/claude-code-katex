@@ -33,7 +33,8 @@
     "theme": "dark"
   },
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onUri"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -73,6 +74,11 @@
             "type": "string"
           },
           "markdownDescription": "Macros in KaTeX's own form, for a handful of definitions without a file — for example `{ \"\\\\RR\": \"\\\\mathbb{R}\", \"\\\\vv\": \"\\\\mathbf{#1}\" }`.\n\nApplied after `#claudeCodeKatex.macroFiles#`, so these win on a name defined by both."
+        },
+        "claudeCodeKatex.fileLinks": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "File links in Claude's replies. Hovering a file link shows its full path; right-click offers Open, Open with system app, Reveal in sidebar, Open containing folder, Copy full path and Copy link. Open shows a PDF or image in its viewer, and a PDF, image or Office file that Claude Code opens as text is reopened properly.\n\nTakes effect immediately (the webview reloads)."
         }
       }
     }
@@ -80,7 +86,8 @@
   "scripts": {
     "test": "jest",
     "build:bundle": "esbuild src/webview/entry.js --bundle --format=iife --minify --alias:katex=./src/webview/katex-global-shim.js --outfile=vendor/remark-math-bundle.js",
-    "vscode:uninstall": "node ./uninstall-hook.js"
+    "vscode:uninstall": "node ./uninstall-hook.js",
+    "test:links": "node test/links-harness.mjs"
   },
   "extensionDependencies": [
     "anthropic.claude-code"

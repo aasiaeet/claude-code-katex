@@ -397,6 +397,17 @@ function applyPatch(extDir, vendorDir, macroPayload) {
   const copyTexPath = path.join(vendorDir, 'copy-tex.min.js');
   const copyTex = fs.existsSync(copyTexPath) ? fs.readFileSync(copyTexPath, 'utf8') : '';
   const v2Bundle = fs.readFileSync(path.join(vendorDir, 'remark-math-bundle.js'), 'utf8');
+  // Annotation pop-up (fork addition): plain DOM code, independent of the
+  // math pipeline, so a missing file only disables annotating.
+  const annotatePath = path.join(vendorDir, 'annotate.js');
+  const annotateJs = fs.existsSync(annotatePath) ? fs.readFileSync(annotatePath, 'utf8') : '';
+  const annotateCssPath = path.join(vendorDir, 'annotate.css');
+  const annotateCss = fs.existsSync(annotateCssPath) ? fs.readFileSync(annotateCssPath, 'utf8') : '';
+  // File-link hover and right-click menu (fork addition, see links-host.js).
+  const linksPath = path.join(vendorDir, 'links.js');
+  const linksJs = fs.existsSync(linksPath) ? fs.readFileSync(linksPath, 'utf8') : '';
+  const linksCssPath = path.join(vendorDir, 'links.css');
+  const linksCss = fs.existsSync(linksCssPath) ? fs.readFileSync(linksCssPath, 'utf8') : '';
   const injectedBody = body.replace(
     V2_INJECT_RE,
     '$1($2,{rehypePlugins:window.__KATEX_V2_LOADED?[window.__rehypeKatex]:[],' +
@@ -416,6 +427,8 @@ function applyPatch(extDir, vendorDir, macroPayload) {
     (copyTex ? `/* KaTeX copy-tex extension (copy selection as LaTeX) - MIT License */\n${copyTex}\n` : '') +
     macroBlock +
     `${BUNDLE_ANCHOR}\n${v2Bundle}\n` +
+    (annotateJs ? `/* Claude Code Annotate */\n${annotateJs}\n` : '') +
+    (linksJs ? `/* Claude Code file links */\n${linksJs}\n` : '') +
     `/* === End KaTeX Patch — Claude Code bundle (math plugins injected) follows === */\n` +
     injectedBody
   );
@@ -437,6 +450,8 @@ ${katexCss}
 .katex {
   font-size: 1.1em;
 }
+${annotateCss}
+${linksCss}
 /* === End KaTeX CSS Patch === */`;
   fs.appendFileSync(cssPath, cssPatch);
 
@@ -611,6 +626,7 @@ function reloadMacros(vendorDir) {
 }
 
 function activate(context) {
+  require('./links-host').registerLinks(context);
   const vendorDir = path.join(context.extensionPath, 'vendor');
 
   // Auto-patch on startup. Files stay patched on disk between sessions so the

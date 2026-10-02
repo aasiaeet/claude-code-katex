@@ -24,6 +24,8 @@ jest.mock('vscode', () => ({
     showWarningMessage: mockShowWarningMessage,
     showErrorMessage: mockShowErrorMessage,
     createStatusBarItem: mockCreateStatusBarItem,
+    registerUriHandler: jest.fn(() => ({ dispose() {} })),
+    onDidChangeActiveTextEditor: jest.fn(() => ({ dispose() {} })),
   },
   commands: {
     registerCommand: mockRegisterCommand,
@@ -605,10 +607,10 @@ describe('activate', () => {
     expect(mockStatusBarItem.text).toMatch(/LaTeX/);
   });
 
-  test('pushes 6 disposables (4 commands + status bar + onDidChange)', () => {
+  test('pushes 8 disposables (4 commands + link handler + binary-file fix + status bar + onDidChange)', () => {
     mockGetExtension.mockReturnValue({ extensionPath: extDir });
     activate(context);
-    expect(context.subscriptions.length).toBe(6);
+    expect(context.subscriptions.length).toBe(8);
   });
 
   test('registers an onDidChange watcher', () => {

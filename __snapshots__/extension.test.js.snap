@@ -16,6 +16,8 @@ exports[`patch golden — byte-identity for a zero-config user patched index.css
 .katex {
   font-size: 1.1em;
 }
+
+
 /* === End KaTeX CSS Patch === */"
 `;
 

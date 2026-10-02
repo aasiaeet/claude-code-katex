@@ -1,9 +1,9 @@
 {
-  "name": "claude-code-katex",
-  "displayName": "Claude Code LaTeX",
-  "description": "Adds LaTeX math rendering to Claude Code chat — inline $...$, display $$...$$, and \\(...\\) / \\[...\\]",
-  "version": "2.1.0",
-  "publisher": "nuriyev",
+  "name": "claude-code-annotate",
+  "displayName": "Claude Code LaTeX + Annotate",
+  "description": "Fork of Claude Code LaTeX: KaTeX math in Claude Code chat, plus a pop-up to annotate selected reply text into the next prompt",
+  "version": "2.3.2",
+  "publisher": "aasiaeet",
   "license": "MIT",
   "icon": "icon.png",
   "repository": {
@@ -33,7 +33,8 @@
     "theme": "dark"
   },
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onUri"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -97,6 +98,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.25.0",
     "jest": "^30.3.0",
     "rehype-katex": "^7.0.1",

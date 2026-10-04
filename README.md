@@ -109,7 +109,8 @@ it for:
 
 Claude Code opens a clicked file as text, which shows a PDF as raw bytes. With
 this setting on, a PDF, image or Office file that opens as text is closed and
-reopened in its proper viewer. Web links keep Claude Code's own menu.
+reopened in its proper viewer, and left-clicking a folder link opens the
+folder in your file manager. Web links keep Claude Code's own menu.
 
 The menu's actions go through a `vscode://` link to this extension, so the
 first one asks once whether to allow it. The handler only opens, reveals or

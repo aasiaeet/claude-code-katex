@@ -72,12 +72,19 @@ test('relative paths resolve against the workspace folder', async () => {
   expect(mockShowTextDocument.mock.calls[0][0].fsPath).toBe(path.join(ws, 'sub', 'b.txt'));
 });
 
-test('Open on a folder: sidebar inside the workspace, file manager outside', async () => {
+test('Open on a folder opens it in the file manager, inside the workspace or out', async () => {
   fs.mkdirSync(path.join(ws, 'figs'));
   await link({ action: 'open', path: path.join(ws, 'figs') });
-  expect(mockExec).toHaveBeenLastCalledWith('revealInExplorer', expect.objectContaining({ fsPath: path.join(ws, 'figs') }));
   await link({ action: 'open', path: outside });
-  expect(mockExec).toHaveBeenLastCalledWith('revealFileInOS', expect.objectContaining({ fsPath: outside }));
+  expect(mockOpenExternal.mock.calls.map((c) => c[0].fsPath)).toEqual([path.join(ws, 'figs'), outside]);
+  expect(mockExec).not.toHaveBeenCalled();
+});
+
+test('Open on an extensionless file (the panel guessed folder) opens it in the editor', async () => {
+  const p = touch(path.join(ws, 'Makefile'));
+  await link({ action: 'open', path: p });
+  expect(mockShowTextDocument.mock.calls[0][0].fsPath).toBe(p);
+  expect(mockOpenExternal).not.toHaveBeenCalled();
 });
 
 test('Reveal in sidebar: sidebar inside the workspace, a message outside', async () => {

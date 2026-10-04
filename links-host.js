@@ -80,11 +80,8 @@ async function handleLink(uri) {
   const target = vscode.Uri.file(p);
   switch (action) {
     case 'open':
-      if (stat.isDirectory()) {
-        return inWorkspace(p)
-          ? vscode.commands.executeCommand('revealInExplorer', target)
-          : vscode.commands.executeCommand('revealFileInOS', target);
-      }
+      // A folder opens in the system file manager.
+      if (stat.isDirectory()) return vscode.env.openExternal(target);
       return openFile(p, line);
     case 'system':
       if (isExecutable(p, stat)) {

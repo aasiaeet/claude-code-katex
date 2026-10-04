@@ -26,9 +26,18 @@
 
   // The file a link points at, or null for web links and anchors. Mirrors
   // Claude Code's own parsing: "path", "path:12", "path:12-20", "path#L12".
+  // VS Code's own file URLs, vscode://file/<path>[:line[:col]], count too,
+  // flagged so a left-click can do what they ask for: open in VS Code.
   function fileTarget(a) {
     var href = a.getAttribute('href') || '';
-    if (/^(https?|mailto|vscode|command):/i.test(href) || href.charAt(0) === '#' || !href) return null;
+    var vs = /^vscode(-insiders)?:\/\/file(\/.*)$/i.exec(href);
+    if (vs) {
+      var vm = /^(.*?):(\d+)(?::\d+)?$/.exec(vs[2]);
+      var vp;
+      try { vp = decodeURIComponent(vm ? vm[1] : vs[2]); } catch (e) { return null; }
+      return { path: vp, line: vm ? +vm[2] : null, href: href, vscode: true };
+    }
+    if (/^(https?|mailto|vscode|vscode-insiders|command):/i.test(href) || href.charAt(0) === '#' || !href) return null;
     if (/^file:\/\//i.test(href)) href = href.replace(/^file:\/\//i, '');
     var line = null;
     var m = /^(.*?)(?:[:#]L?(\d+)(?:-L?\d+)?)$/.exec(href);
@@ -83,7 +92,9 @@
       overlay.addEventListener('click', function () { setTimeout(dropOverlay, 0); });
       document.body.appendChild(overlay);
     }
-    overlay.href = actionUrl('open', t);
+    // A vscode://file link asks for VS Code; a plain folder path for the
+    // file manager.
+    overlay.href = actionUrl(t.vscode ? 'window' : 'open', t);
     overlay.title = t.path;
     overlay.__cclTarget = t;
     overlay.style.left = r.left + 'px';
@@ -123,6 +134,7 @@
     menu.className = 'ccl-menu';
     menu.setAttribute('role', 'menu');
     menu.appendChild(item('Open', { url: actionUrl('open', t) }));
+    menu.appendChild(item('Open in new VS Code window', { url: actionUrl('window', t) }));
     menu.appendChild(item('Open with system app', { url: actionUrl('system', t) }));
     menu.appendChild(item('Reveal in sidebar', { url: actionUrl('reveal', t) }));
     menu.appendChild(item('Open containing folder', { url: actionUrl('folder', t) }));
@@ -162,7 +174,7 @@
     if (e.target === overlay) return;
     var a = linkAt(e.target);
     var t = a && fileTarget(a);
-    if (t && looksLikeFolder(t)) placeOverlay(a, t, e.clientX, e.clientY);
+    if (t && (t.vscode || looksLikeFolder(t))) placeOverlay(a, t, e.clientX, e.clientY);
     else dropOverlay();
   });
 

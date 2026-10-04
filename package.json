@@ -2,7 +2,7 @@
   "name": "claude-code-annotate",
   "displayName": "Claude Code LaTeX + Annotate",
   "description": "Fork of Claude Code LaTeX: KaTeX math in Claude Code chat, plus a pop-up to annotate selected reply text into the next prompt",
-  "version": "2.3.3",
+  "version": "2.3.4",
   "publisher": "aasiaeet",
   "license": "MIT",
   "icon": "icon.png",

@@ -134,3 +134,12 @@ test('a text file opened as text is left alone', async () => {
   expect(mockCloseTabs).not.toHaveBeenCalled();
   expect(mockExec).not.toHaveBeenCalled();
 });
+
+test('Open in new VS Code window: folders become a workspace, files open in the editor', async () => {
+  fs.mkdirSync(path.join(outside, 'repo'));
+  await link({ action: 'window', path: path.join(outside, 'repo') });
+  expect(mockExec).toHaveBeenCalledWith('vscode.openFolder', expect.objectContaining({ fsPath: path.join(outside, 'repo') }), { forceNewWindow: true });
+  const f = touch(path.join(ws, 'k.tex'));
+  await link({ action: 'window', path: f, line: '3' });
+  expect(mockShowTextDocument.mock.calls[0][0].fsPath).toBe(f);
+});

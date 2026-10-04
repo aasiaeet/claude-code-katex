@@ -30,3 +30,10 @@
   margin: 4px 6px;
   background: var(--vscode-menu-separatorBackground, #454545);
 }
+.ccl-overlay {
+  position: fixed;
+  z-index: 2147482500;
+  display: block;
+  background: transparent;
+  cursor: pointer;
+}

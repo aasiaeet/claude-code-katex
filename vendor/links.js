@@ -7,7 +7,14 @@
  * that need VS Code are real <a href="vscode://..."> links handled by this
  * extension's URI handler. VS Code forwards a link click from a webview only
  * when it is a genuine user click, and the menu lives outside Claude Code's
- * React tree, so nothing stops that click on its way. */
+ * React tree, so nothing stops that click on its way.
+ *
+ * Left-clicking a folder link would make Claude Code try to open the folder
+ * as a text document, which fails without a trace. So while the mouse is on
+ * a link that looks like a folder (no file extension), a transparent
+ * <a href="vscode://...action=open"> sits over it and takes the click; the
+ * handler opens a folder in the file manager and a file in the editor, so an
+ * extensionless file (Makefile) still opens normally. */
 (function () {
   if (window.__CCL_LOADED) return;
   window.__CCL_LOADED = true;
@@ -15,6 +22,7 @@
   var SCOPE = '[class*="messagesContainer_"]';
   var HANDLER = 'vscode://aasiaeet.claude-code-annotate/link';
   var menu = null;
+  var overlay = null;  // the click-taker over a folder-like link
 
   // The file a link points at, or null for web links and anchors. Mirrors
   // Claude Code's own parsing: "path", "path:12", "path:12-20", "path#L12".
@@ -45,6 +53,43 @@
 
   function copy(text) {
     try { navigator.clipboard.writeText(text); } catch (e) {}
+  }
+
+  // Last path segment has no extension, or the path ends with a slash.
+  function looksLikeFolder(t) {
+    var p = t.path.replace(/\/+$/, '');
+    if (t.path !== p) return true;
+    var last = p.slice(p.lastIndexOf('/') + 1);
+    return !!last && last.indexOf('.') <= 0 && !t.line;
+  }
+
+  function dropOverlay() {
+    if (overlay) overlay.remove();
+    overlay = null;
+  }
+
+  // Cover the line box of the link under the mouse (a link can wrap).
+  function placeOverlay(a, t, x, y) {
+    var rects = a.getClientRects(), r = null;
+    for (var i = 0; i < rects.length; i++) {
+      var c = rects[i];
+      if (x >= c.left && x <= c.right && y >= c.top && y <= c.bottom) { r = c; break; }
+    }
+    if (!r) return;
+    if (!overlay) {
+      overlay = document.createElement('a');
+      overlay.className = 'ccl-overlay';
+      overlay.addEventListener('mouseleave', dropOverlay);
+      overlay.addEventListener('click', function () { setTimeout(dropOverlay, 0); });
+      document.body.appendChild(overlay);
+    }
+    overlay.href = actionUrl('open', t);
+    overlay.title = t.path;
+    overlay.__cclTarget = t;
+    overlay.style.left = r.left + 'px';
+    overlay.style.top = r.top + 'px';
+    overlay.style.width = r.width + 'px';
+    overlay.style.height = r.height + 'px';
   }
 
   function closeMenu() {
@@ -97,7 +142,7 @@
   // would open its own "Copy Link" menu.
   window.addEventListener('contextmenu', function (e) {
     var a = linkAt(e.target);
-    var t = a && fileTarget(a);
+    var t = e.target === overlay ? overlay.__cclTarget : a && fileTarget(a);
     if (!t) return;
     e.preventDefault();
     e.stopPropagation();
@@ -113,6 +158,14 @@
     a.dataset.cclTitled = '1';
   });
 
+  document.addEventListener('mousemove', function (e) {
+    if (e.target === overlay) return;
+    var a = linkAt(e.target);
+    var t = a && fileTarget(a);
+    if (t && looksLikeFolder(t)) placeOverlay(a, t, e.clientX, e.clientY);
+    else dropOverlay();
+  });
+
   window.addEventListener('mousedown', function (e) {
     if (menu && !menu.contains(e.target)) closeMenu();
   }, true);
@@ -120,8 +173,8 @@
     if (menu && e.key === 'Escape') { e.preventDefault(); closeMenu(); }
   }, true);
   window.addEventListener('blur', closeMenu);
-  window.addEventListener('scroll', closeMenu, true);
+  window.addEventListener('scroll', function () { closeMenu(); dropOverlay(); }, true);
   window.addEventListener('resize', closeMenu);
 
-  window.__CCL = { fileTarget: fileTarget, actionUrl: actionUrl };
+  window.__CCL = { fileTarget: fileTarget, actionUrl: actionUrl, looksLikeFolder: looksLikeFolder };
 })();

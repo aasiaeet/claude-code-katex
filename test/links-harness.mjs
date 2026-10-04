@@ -59,6 +59,39 @@ await page.click('#web', { button: 'right' });
 const web = await page.evaluate(() => ({ menu: !!document.querySelector('.ccl-menu'), claude: window.claudeMenus.slice() }));
 check('web links keep Claude\'s own menu', !web.menu && JSON.stringify(web.claude) === '["web"]', JSON.stringify(web));
 
+// Folder links: a left-click goes to the handler (and on to the file manager),
+// not to Claude Code, which cannot open a folder.
+// Real mouse clicks: Playwright's element click refuses when something
+// covers the element, and covering it is the point here.
+async function mouseClick(sel, button = 'left') {
+  const b = await page.$eval(sel, (el) => { const r = el.getClientRects()[0]; return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  await page.mouse.move(b.x, b.y);
+  await page.mouse.click(b.x, b.y, { button });
+  await page.waitForTimeout(20);
+}
+const reset = () => page.evaluate(() => { window.forwarded = []; window.claudeOpens = []; });
+await reset();
+await mouseClick('#dir');
+let r = await page.evaluate(() => ({ fwd: window.forwarded.slice(), claude: window.claudeOpens.slice() }));
+check('left-click on a folder link goes to the handler, not to Claude Code',
+  JSON.stringify(r.fwd) === JSON.stringify([base + 'open&path=' + encodeURIComponent('/home/amir/repo/paper/figs')]) && r.claude.length === 0,
+  JSON.stringify(r));
+await reset();
+await mouseClick('#dirslash');
+r = await page.evaluate(() => window.forwarded.slice());
+check('a trailing slash also counts as a folder', JSON.stringify(r) === JSON.stringify([base + 'open&path=' + encodeURIComponent('results/')]), JSON.stringify(r));
+await reset();
+await mouseClick('#abs');
+r = await page.evaluate(() => ({ fwd: window.forwarded.slice(), claude: window.claudeOpens.slice(), overlay: !!document.querySelector('.ccl-overlay') }));
+check('file links still go to Claude Code on left-click', r.fwd.length === 0 && JSON.stringify(r.claude) === '["abs"]' && !r.overlay, JSON.stringify(r));
+await mouseClick('#dir', 'right');
+const folderMenu = await page.$$eval('.ccl-item', (as) => as.map((a) => a.getAttribute('href')));
+check('right-click on a folder link still opens our menu', folderMenu[0] === base + 'open&path=' + encodeURIComponent('/home/amir/repo/paper/figs'),
+  JSON.stringify(folderMenu));
+await page.keyboard.press('Escape');
+await page.mouse.move(2, 2);
+check('the click-taker goes away when the mouse leaves the link', (await page.$('.ccl-overlay')) === null, 'still there');
+
 await browser.close();
 console.log(failures ? `\n${failures} failure(s)` : '\nall passed');
 process.exit(failures ? 1 : 0);

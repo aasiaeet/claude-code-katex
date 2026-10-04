@@ -11,12 +11,21 @@
   <p>See <a id="abs" href="/home/amir/repo/paper%20v2/main.pdf">main.pdf</a>,
      <a id="rel" href="code/fit.R:12">fit.R</a> and
      <a id="web" href="https://example.org/x">a web page</a>.</p>
+  <p>Outputs are in <a id="dir" href="/home/amir/repo/paper/figs">the figs folder</a> and
+     <a id="dirslash" href="results/">results/</a>.</p>
 </div></div>
 <script>
   // Stand-in for Claude Code's React handlers (delegated at the app root).
   window.claudeMenus = [];
   document.getElementById('root').addEventListener('contextmenu', function (e) {
     e.preventDefault(); window.claudeMenus.push(e.target.id);
+  });
+  // Claude Code's link click handler: opens the file itself and stops the
+  // event, so VS Code's forwarder never sees it.
+  window.claudeOpens = [];
+  document.getElementById('root').addEventListener('click', function (e) {
+    var a = e.target.closest('a');
+    if (a) { e.preventDefault(); e.stopPropagation(); window.claudeOpens.push(a.id); }
   });
   // Stand-in for VS Code's webview link forwarder (window, bubble phase,
   // trusted clicks only).

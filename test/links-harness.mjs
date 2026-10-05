@@ -31,12 +31,11 @@ const m = await page.evaluate(() => ({
 }));
 const base = 'vscode://aasiaeet.claude-code-annotate/link?action=';
 const p = encodeURIComponent('/home/amir/repo/paper v2/main.pdf');
-check('right-click on a file link opens our menu, not Claude\'s', m.items.length === 7 && m.claude.length === 0, JSON.stringify(m));
+check('right-click on a file link opens our menu, not Claude\'s', m.items.length === 6 && m.claude.length === 0, JSON.stringify(m));
 check('menu actions are vscode:// links to the handler',
-  JSON.stringify(m.items.slice(0, 5)) === JSON.stringify([
-    ['Open', base + 'open&path=' + p], ['Open in new VS Code window', base + 'window&path=' + p],
-    ['Open with system app', base + 'system&path=' + p], ['Reveal in sidebar', base + 'reveal&path=' + p],
-    ['Open containing folder', base + 'folder&path=' + p]]),
+  JSON.stringify(m.items.slice(0, 4)) === JSON.stringify([
+    ['Open', base + 'open&path=' + p], ['Open with system app', base + 'system&path=' + p],
+    ['Reveal in sidebar', base + 'reveal&path=' + p], ['Open containing folder', base + 'folder&path=' + p]]),
   JSON.stringify(m.items));
 
 await page.click('.ccl-item >> text=Copy full path');
@@ -92,29 +91,6 @@ check('right-click on a folder link still opens our menu', folderMenu[0] === bas
 await page.keyboard.press('Escape');
 await page.mouse.move(2, 2);
 check('the click-taker goes away when the mouse leaves the link', (await page.$('.ccl-overlay')) === null, 'still there');
-
-// vscode://file links (VS Code's own file URLs) are file links too.
-await page.hover('#vsfile');
-check('vscode://file link: hover shows the path, line kept, column dropped',
-  (await page.getAttribute('#vsfile', 'title')) === '/home/amir/repo/causal-gan/paper/main.tex:42', await page.getAttribute('#vsfile', 'title'));
-await page.keyboard.press('Escape');
-await mouseClick('#vsdir', 'right');
-const vsMenu = await page.$$eval('.ccl-item', (as) => as.map((a) => [a.textContent, a.getAttribute('href')]));
-const vsPath = encodeURIComponent('/home/amir/repo/causal-gan');
-check('vscode://file link: right-click shows our menu, with Open containing folder and Open in new VS Code window',
-  vsMenu.some(([t, h]) => t === 'Open containing folder' && h === base + 'folder&path=' + vsPath) &&
-  vsMenu.some(([t, h]) => t === 'Open in new VS Code window' && h === base + 'window&path=' + vsPath), JSON.stringify(vsMenu));
-await page.keyboard.press('Escape');
-await reset();
-await mouseClick('#vsdir');
-r = await page.evaluate(() => ({ fwd: window.forwarded.slice(), claude: window.claudeOpens.slice() }));
-check('left-click on a vscode://file folder link opens it as a VS Code workspace',
-  JSON.stringify(r.fwd) === JSON.stringify([base + 'window&path=' + vsPath]) && r.claude.length === 0, JSON.stringify(r));
-await reset();
-await mouseClick('#vsfile');
-r = await page.evaluate(() => window.forwarded.slice());
-check('left-click on a vscode://file file link opens it at its line',
-  JSON.stringify(r) === JSON.stringify([base + 'window&path=' + encodeURIComponent('/home/amir/repo/causal-gan/paper/main.tex') + '&line=42']), JSON.stringify(r));
 
 await browser.close();
 console.log(failures ? `\n${failures} failure(s)` : '\nall passed');

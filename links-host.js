@@ -98,10 +98,6 @@ async function handleLink(uri) {
       return vscode.commands.executeCommand('revealInExplorer', target);
     case 'folder':
       return vscode.commands.executeCommand('revealFileInOS', target);
-    case 'window':
-      // A folder becomes a workspace in a new window; a file just opens.
-      if (stat.isDirectory()) return vscode.commands.executeCommand('vscode.openFolder', target, { forceNewWindow: true });
-      return openFile(p, line);
     default:
       vscode.window.showWarningMessage(`Unknown link action: ${action}`);
   }

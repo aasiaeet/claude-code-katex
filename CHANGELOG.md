@@ -8,7 +8,8 @@
   Enter: the quote and the note go into the prompt box as a numbered
   `Annotation N:` block. Math in the selection is quoted as its LaTeX source.
   Each annotated span keeps a numbered balloon: click it to edit the comment
-  in place or delete the annotation. With the setting off, which is the default, the patch
+  in place or delete the annotation. Replies stay selectable in Claude Code's
+  Focus view, which otherwise turns selection off for them. With the setting off, which is the default, the patch
   is unchanged.
 
 ## [2.1.0] - 2026-07-31

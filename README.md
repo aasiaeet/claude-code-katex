@@ -122,7 +122,8 @@ truth: edit a comment there by hand and the balloon shows your edit, delete an
 annotation there and its balloon goes too. Sending the prompt clears them all.
 
 The note box leaves your selection alone until you type or paste, so Ctrl+C
-still copies it. The feature is off by default and changing the setting takes effect
+still copies it. Reply text also stays selectable in Claude Code's Focus view,
+which otherwise turns selection off for replies. The feature is off by default and changing the setting takes effect
 right away.
 
 ## How it works

@@ -330,6 +330,28 @@ const balloon = (n) => page.locator('.cca-badge', { hasText: new RegExp('^' + n 
   check('highlights and balloons cleared after send', m === 0 && b === 0, JSON.stringify({ m, b }));
 }
 
+// 11. Claude Code turns text selection off for its whole app and back on
+//     per message type; Focus view draws replies outside that list. The
+//     message list must stay selectable anyway. Control: with the rule
+//     overridden, the same drag selects nothing.
+{
+  const dragSelect = async () => {
+    const a = await point(page, '#p3', { char: 0 });
+    const b = await point(page, '#p3', { char: 7 });
+    await drag(page, a, b);
+    const text = await page.evaluate(() => window.getSelection().toString());
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    return text;
+  };
+  await page.evaluate(() => { document.body.style.userSelect = 'none'; document.body.style.webkitUserSelect = 'none'; });
+  const withRule = await dragSelect();
+  await page.addStyleTag({ content: '[class*="messagesContainer_"] { user-select: auto !important; -webkit-user-select: auto !important; }' });
+  const withoutRule = await dragSelect();
+  check('replies stay selectable when the app turns selection off (Focus view)',
+    withRule.startsWith('Closing') && withoutRule === '', JSON.stringify({ withRule, withoutRule }));
+}
+
 await page.screenshot({ path: path.join(here, '..', 'test-results', 'annotate.png') }).catch(() => {});
 await browser.close();
 console.log(failures ? `\n${failures} failure(s)` : '\nall passed');

@@ -176,3 +176,12 @@ body.vscode-high-contrast .cca-pop .cca-save {
   color: var(--vscode-textLink-foreground, #3794ff);
   text-shadow: 0.35px 0 0 var(--vscode-textLink-foreground, #3794ff), -0.35px 0 0 var(--vscode-textLink-foreground, #3794ff);
 }
+
+/* Claude Code turns text selection off for its whole app and back on per message type. Focus
+ * view draws replies outside that list, so they could not be selected, copied, or annotated.
+ * Re-enable selection for the whole message list; fold rows, tool-call headers, and the badges
+ * above keep their own user-select: none. */
+[class*="messagesContainer_"] {
+  -webkit-user-select: text;
+  user-select: text;
+}

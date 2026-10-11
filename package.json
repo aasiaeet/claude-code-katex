@@ -2,7 +2,7 @@
   "name": "claude-code-annotate",
   "displayName": "Claude Code LaTeX + Annotate",
   "description": "Fork of Claude Code LaTeX: KaTeX math in Claude Code chat, plus a pop-up to annotate selected reply text into the next prompt",
-  "version": "2.3.6",
+  "version": "2.4.0",
   "publisher": "aasiaeet",
   "license": "MIT",
   "icon": "icon.png",
@@ -74,12 +74,18 @@
             "type": "string"
           },
           "markdownDescription": "Macros in KaTeX's own form, for a handful of definitions without a file — for example `{ \"\\\\RR\": \"\\\\mathbb{R}\", \"\\\\vv\": \"\\\\mathbf{#1}\" }`.\n\nApplied after `#claudeCodeKatex.macroFiles#`, so these win on a name defined by both."
+        },
+        "claudeCodeKatex.renderPlanPreview": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Experimental: render LaTeX in Claude Code's plan approval view. This requires modifying Claude Code's host `extension.js`, with a validated backup and automatic restoration when disabled or uninstalled. Changing this setting prompts you to reload the VS Code window."
         }
       }
     }
   },
   "scripts": {
     "test": "jest",
+    "build:parser": "esbuild node_modules/acorn/dist/acorn.js --bundle --platform=node --format=cjs --minify --legal-comments=inline --outfile=vendor/acorn.js",
     "build:bundle": "esbuild src/webview/entry.js --bundle --format=iife --minify --alias:katex=./src/webview/katex-global-shim.js --outfile=vendor/remark-math-bundle.js",
     "vscode:uninstall": "node ./uninstall-hook.js"
   },
@@ -93,12 +99,14 @@
   "homepage": "https://github.com/MahammadNuriyev62/claude-code-katex#readme",
   "jest": {
     "testPathIgnorePatterns": [
-      "/node_modules/"
+      "/node_modules/",
+      "/.worktrees/"
     ]
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "@vscode/vsce": "^3.9.2",
+    "acorn": "8.18.0",
     "esbuild": "^0.25.0",
     "jest": "^30.3.0",
     "rehype-katex": "^7.0.1",

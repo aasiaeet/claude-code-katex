@@ -1,7 +1,9 @@
 node_modules/
 *.vsix
 .env
+.env.*
 .claude/
+.worktrees/
 test-results/
 .playwright-mcp/
 claude-code-latex-demo.mp4

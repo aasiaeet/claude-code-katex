@@ -3,6 +3,9 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const vm = require('vm');
+const planPatch = require('./plan-patch');
+const { replaceFiles } = require('./patch-files');
 
 const PATCH_MARKER = '/* === KaTeX LaTeX Rendering Patch === */';
 const PATCH_CSS_MARKER = '/* === KaTeX LaTeX Rendering CSS Patch === */';
@@ -40,24 +43,9 @@ const PATCH_VERSION_PREFIX = '/* katex-ext-version: ';
 // Where users report a Claude Code build the patch no longer fits.
 const ISSUES_URL = 'https://github.com/MahammadNuriyev62/claude-code-katex/issues';
 
-// The react-markdown call site in Claude Code's webview bundle:
-//   <factory>(<Markdown>, {remarkPlugins:[<plugins>], components:{...}}, <text>)
-// The patch injects the math plugins here. $1 = the JSX factory (React's
-// `createElement`, or a minified alias like `b` — Claude Code 2.1.186 switched
-// to the short-alias form), $2 = the Markdown component identifier, $3 = the
-// existing remark plugin list. `remarkPlugins` is react-markdown's stable
-// public prop name, and `<ident>(<ident>,{remarkPlugins:[` is specific enough
-// to pin the one call site, so this survives minification-hash churn; if a
-// future Claude Code reshapes the call entirely, applyPatch reports it as
-// unsupported rather than patching blind.
-//
-// The identifier runs are length-bounded ({0,N}) rather than open-ended (*).
-// This regex is matched against the multi-MB minified webview bundle; an
-// open-ended `[\w$]*\(` backtracks O(n^2) across a long word-run that isn't
-// followed by `(`, which on a megabyte-scale bundle hangs the patch. Real JSX
-// factory / component / plugin identifiers are short, so the bounds never
-// exclude a genuine match while keeping the scan linear.
-const V2_INJECT_RE = /([A-Za-z_$][\w$]{0,40})\(([A-Za-z_$][\w$]{0,40}),\{remarkPlugins:\[([A-Za-z_$][\w$,]{0,200})\]/;
+// Parse the Markdown call structurally; keep the original simple-call rewrite
+// byte-identical for existing installs. Unknown or ambiguous shapes are rejected.
+const { injectMathPlugins, V2_INJECT_RE } = require('./markdown-patch');
 
 function findClaudeCodeExtDir() {
   const ext = vscode.extensions.getExtension('anthropic.claude-code');
@@ -216,6 +204,31 @@ function insertMacroBlock(body, payload) {
   return body.slice(0, at) + renderMacroBlock(payload) + '\n' + body.slice(at);
 }
 
+// Fork: stamped into a patch applied without math (see applyPatch).
+const MATHLESS_MARKER = '/* claude-code-annotate: math unavailable on this Claude Code build */';
+
+function isMathless(extDir) {
+  try {
+    return fs.readFileSync(path.join(extDir, 'webview', 'index.js'), 'utf8').slice(0, 4096).includes(MATHLESS_MARKER);
+  } catch {
+    return false;
+  }
+}
+
+function notifyMathless() {
+  vscode.window
+    .showWarningMessage(
+      'Claude Code LaTeX + Annotate: this Claude Code build changed its Markdown internals, so math rendering is off ' +
+      'until the extension catches up. Annotation and file links still work.',
+      'Check for Updates'
+    )
+    .then(function(choice) {
+      if (choice === 'Check for Updates') {
+        vscode.commands.executeCommand('workbench.extensions.action.checkForUpdates');
+      }
+    });
+}
+
 function isPatched(extDir) {
   try {
     const js = fs.readFileSync(path.join(extDir, 'webview', 'index.js'), 'utf8');
@@ -250,6 +263,16 @@ function readMacroConfig() {
     return { macroFiles: cfg.get('macroFiles', []), macros: cfg.get('macros', {}) };
   } catch {
     return { macroFiles: [], macros: {} };
+  }
+}
+
+function readPlanPreviewConfig() {
+  try {
+    return vscode.workspace
+      .getConfiguration('claudeCodeKatex')
+      .get('renderPlanPreview', false) === true;
+  } catch {
+    return false;
   }
 }
 
@@ -345,37 +368,231 @@ function describeMacros(payload, vendorDir) {
   return parts.join(', ') + describeFailures();
 }
 
+// --- plan approval view (issue #17) ---------------------------------------
+//
+// The plan panel is a second webview, built and Markdown-rendered by Claude
+// Code's HOST extension.js, so the webview patch cannot reach it. plan-patch.js
+// explains the two anchored rewrites; everything risky about touching host code
+// is handled here: the original is backed up first, the patched source has to
+// compile before it is written, and the write is atomic. Any failure leaves
+// Claude Code's own file exactly as it was — the plan panel then behaves as it
+// always has, with math unrendered.
+
+// Assets baked into the plan patch. Read from this extension's own vendor dir,
+// never from Claude Code's.
+function readPlanAssets(vendorDir, macroPayload) {
+  const css = planPatch.inlineFonts(
+    fs.readFileSync(path.join(vendorDir, 'katex.min.css'), 'utf8'),
+    path.join(vendorDir, 'fonts'),
+    (p) => fs.readFileSync(p)
+  );
+  let macroIngestSource = '';
+  try {
+    macroIngestSource = fs.readFileSync(path.join(__dirname, 'macro-ingest.js'), 'utf8');
+  } catch (e) {
+    // Only user macros are lost; the panel still renders math.
+    console.warn('[Claude Code LaTeX] Plan panel will render without user macros:', e && e.message);
+  }
+  // copy-tex is optional here for the same reason it is in the webview patch:
+  // a missing file costs only "copy selection as LaTeX", never rendering.
+  const copyTexPath = path.join(vendorDir, 'copy-tex.min.js');
+  return {
+    css,
+    js: fs.readFileSync(path.join(vendorDir, 'katex.min.js'), 'utf8'),
+    copyTex: fs.existsSync(copyTexPath) ? fs.readFileSync(copyTexPath, 'utf8') : '',
+    macroIngestSource,
+    macroPayload: macroPayload && !macroPayload.isEmpty ? macroPayload : null,
+    macroHash: macroPayload && !macroPayload.isEmpty ? macroPayload.hash : 'none',
+    version: EXTENSION_VERSION,
+  };
+}
+
+// A backup we would be willing to restore from: present, non-empty, and not
+// itself carrying a patch.
+function planBackupIsPristine(bak) {
+  try {
+    if (!fs.existsSync(bak)) return false;
+    const body = fs.readFileSync(bak, 'utf8');
+    return body.length > 0 && !planPatch.isPlanPatched(body);
+  } catch {
+    return false;
+  }
+}
+
+// Write via a temp file + rename so an interrupted write can never leave
+// Claude Code with a truncated host bundle.
+function writeFileAtomic(target, body) {
+  const tmp = target + '.katex-tmp';
+  try {
+    fs.writeFileSync(tmp, body);
+    fs.renameSync(tmp, target);
+  } catch (e) {
+    // Rename can fail where the destination is locked (Windows); fall back to
+    // an in-place write, which is what the webview patch has always done.
+    try { fs.unlinkSync(tmp); } catch { /* nothing to clean up */ }
+    fs.writeFileSync(target, body);
+  }
+}
+
+// Ensures Claude Code's host bundle carries this build's plan patch, with the
+// current macros. Returns:
+//   'applied'     - patch written (fresh, refreshed, or macros changed)
+//   'current'     - already carries this exact patch; nothing done
+//   'unsupported' - this Claude Code build does not have the expected shape
+//   'skipped'     - patched by another build and the backup cannot be trusted
+//   'failed'      - the patched source did not compile, or I/O failed
+function ensurePlanPatched(extDir, vendorDir, macroPayload) {
+  const target = path.join(extDir, 'extension.js');
+  const bak = target + '.katex-bak';
+
+  let source;
+  try {
+    source = fs.readFileSync(target, 'utf8');
+  } catch (e) {
+    console.warn('[Claude Code LaTeX] Could not read Claude Code\'s extension.js:', e && e.message);
+    return 'failed';
+  }
+
+  const wantedHash = macroPayload && !macroPayload.isEmpty ? macroPayload.hash : 'none';
+  if (planPatch.isPlanPatched(source)) {
+    if (planPatch.getPlanPatchVersion(source) === EXTENSION_VERSION &&
+        planPatch.getPlanMacroHash(source) === wantedHash) {
+      return 'current';
+    }
+    // Stale patch. Re-apply from the pristine original rather than patching a
+    // patched file; without a trustworthy backup, leave it alone.
+    if (!planBackupIsPristine(bak)) {
+      console.warn('[Claude Code LaTeX] Plan-panel patch is stale but the backup is missing or invalid; leaving it in place.');
+      return 'skipped';
+    }
+    source = fs.readFileSync(bak, 'utf8');
+  } else {
+    // Unpatched, so this file IS the pristine original — refresh the backup,
+    // which also covers Claude Code updating in place.
+    try {
+      fs.copyFileSync(target, bak);
+    } catch (e) {
+      console.warn('[Claude Code LaTeX] Could not back up Claude Code\'s extension.js; not patching the plan panel:', e && e.message);
+      return 'failed';
+    }
+  }
+
+  let result;
+  try {
+    result = planPatch.applyPlanPatch(source, readPlanAssets(vendorDir, macroPayload));
+  } catch (e) {
+    console.warn('[Claude Code LaTeX] Plan-panel patch could not be built:', e && e.message);
+    return 'failed';
+  }
+  if (!result.ok) {
+    console.warn('[Claude Code LaTeX] Plan panel not patched: ' + result.reason);
+    return 'unsupported';
+  }
+
+  // The last gate before touching host code: it has to compile. vm.Script
+  // parses and compiles without executing anything.
+  try {
+    new vm.Script(result.source, { filename: target });
+  } catch (e) {
+    console.error('[Claude Code LaTeX] Refusing to write the plan-panel patch — the result did not compile:', e && e.message);
+    return 'failed';
+  }
+
+  try {
+    writeFileAtomic(target, result.source);
+  } catch (e) {
+    console.error('[Claude Code LaTeX] Could not write the plan-panel patch:', e && e.message);
+    return 'failed';
+  }
+  return 'applied';
+}
+
+// Restores Claude Code's host bundle. Returns true if anything was restored.
+// The backup is kept, exactly like the webview backups, so a later Enable can
+// re-apply without a Claude Code reinstall.
+function removePlanPatch(extDir) {
+  const target = path.join(extDir, 'extension.js');
+  const bak = target + '.katex-bak';
+  try {
+    if (!fs.existsSync(bak)) return false;
+    if (!planBackupIsPristine(bak)) return false;
+    if (!planPatch.isPlanPatched(fs.readFileSync(target, 'utf8'))) return false;
+    writeFileAtomic(target, fs.readFileSync(bak));
+    return true;
+  } catch (e) {
+    console.warn('[Claude Code LaTeX] Could not restore Claude Code\'s extension.js:', e && e.message);
+    return false;
+  }
+}
+
+function isPlanPatched(extDir) {
+  try {
+    return planPatch.isPlanPatched(fs.readFileSync(path.join(extDir, 'extension.js'), 'utf8'));
+  } catch {
+    return false;
+  }
+}
+
+// ensurePlanPatched, wrapped so no plan-panel problem can ever interrupt the
+// chat patch — the feature users actually installed this for.
+function ensurePlanPatchedSafely(extDir, vendorDir, macroPayload) {
+  try {
+    return ensurePlanPatched(extDir, vendorDir, macroPayload);
+  } catch (e) {
+    console.error('[Claude Code LaTeX] Plan-panel patch failed:', e);
+    return 'failed';
+  }
+}
+
+function syncPlanPreview(extDir, vendorDir, macroPayload, enabled) {
+  if (enabled) return ensurePlanPatchedSafely(extDir, vendorDir, macroPayload);
+  return removePlanPatch(extDir) ? 'removed' : 'current';
+}
+
 // Patches Claude Code's webview to render math through its own react-markdown
 // pipeline. Returns true if patched, or false if the react-markdown injection
 // point was not found (a future Claude Code reshaped its bundle) — in which
 // case nothing on disk is touched and the caller surfaces an "unsupported"
 // message.
-function applyPatch(extDir, vendorDir, macroPayload) {
+function applyPatch(extDir, vendorDir, macroPayload, originalBody) {
   const webviewDir = path.join(extDir, 'webview');
   const jsPath = path.join(webviewDir, 'index.js');
   const cssPath = path.join(webviewDir, 'index.css');
 
-  const body = fs.readFileSync(jsPath, 'utf8');
-  if (!V2_INJECT_RE.test(body)) {
-    // The injection point is gone — leave the webview completely untouched.
-    return false;
+  const currentBody = fs.readFileSync(jsPath, 'utf8');
+  const body = originalBody === undefined ? currentBody : originalBody;
+  // Annotation pop-up (fork addition): plain DOM code, independent of the
+  // math pipeline, so a missing file only disables annotating.
+  const annotatePath = path.join(vendorDir, 'annotate.js');
+  const annotateJs = fs.existsSync(annotatePath) ? fs.readFileSync(annotatePath, 'utf8') : '';
+  const annotateCssPath = path.join(vendorDir, 'annotate.css');
+  const annotateCss = fs.existsSync(annotateCssPath) ? fs.readFileSync(annotateCssPath, 'utf8') : '';
+  // File-link hover and right-click menu (fork addition, see links-host.js).
+  const linksPath = path.join(vendorDir, 'links.js');
+  const linksJs = fs.existsSync(linksPath) ? fs.readFileSync(linksPath, 'utf8') : '';
+  const linksCssPath = path.join(vendorDir, 'links.css');
+  const linksCss = fs.existsSync(linksCssPath) ? fs.readFileSync(linksCssPath, 'utf8') : '';
+  let injectedBody = injectMathPlugins(body);
+  const mathless = injectedBody === null;
+  if (mathless) {
+    // Fork: the annotation pop-up and file links need only the DOM, so when
+    // this Claude Code build's Markdown call cannot be found, patch without
+    // math rather than not at all. The stamp below lets activation say so.
+    // An already-patched bundle is never patched a second time.
+    if ((!annotateJs && !linksJs) || body.includes(PATCH_MARKER)) return false;
+    injectedBody = body;
   }
 
-  // Back up originals if not already backed up
-  for (const f of [jsPath, cssPath]) {
-    if (!fs.existsSync(f + '.katex-bak')) {
-      fs.copyFileSync(f, f + '.katex-bak');
+  // If upstream replaced only JavaScript, the stylesheet can still carry our
+  // old patch. Use its verified original once, rather than duplicating styles.
+  const cssBody = fs.readFileSync(cssPath, 'utf8');
+  let originalCss = cssBody;
+  if (cssBody.includes(PATCH_CSS_MARKER)) {
+    originalCss = fs.readFileSync(cssPath + '.katex-bak', 'utf8');
+    if (originalCss.includes(PATCH_CSS_MARKER) ||
+        !cssBody.startsWith(originalCss + '\n' + PATCH_CSS_MARKER)) {
+      throw new Error('Cannot safely refresh the patched stylesheet: its original backup does not match.');
     }
-  }
-
-  // Copy KaTeX fonts
-  const fontsTarget = path.join(webviewDir, 'fonts');
-  const fontsSrc = path.join(vendorDir, 'fonts');
-  if (!fs.existsSync(fontsTarget)) {
-    fs.mkdirSync(fontsTarget, { recursive: true });
-  }
-  for (const font of fs.readdirSync(fontsSrc)) {
-    fs.copyFileSync(path.join(fontsSrc, font), path.join(fontsTarget, font));
   }
 
   // Patch index.js — inject remark-math + rehype-katex into Claude Code's
@@ -397,22 +614,6 @@ function applyPatch(extDir, vendorDir, macroPayload) {
   const copyTexPath = path.join(vendorDir, 'copy-tex.min.js');
   const copyTex = fs.existsSync(copyTexPath) ? fs.readFileSync(copyTexPath, 'utf8') : '';
   const v2Bundle = fs.readFileSync(path.join(vendorDir, 'remark-math-bundle.js'), 'utf8');
-  // Annotation pop-up (fork addition): plain DOM code, independent of the
-  // math pipeline, so a missing file only disables annotating.
-  const annotatePath = path.join(vendorDir, 'annotate.js');
-  const annotateJs = fs.existsSync(annotatePath) ? fs.readFileSync(annotatePath, 'utf8') : '';
-  const annotateCssPath = path.join(vendorDir, 'annotate.css');
-  const annotateCss = fs.existsSync(annotateCssPath) ? fs.readFileSync(annotateCssPath, 'utf8') : '';
-  // File-link hover and right-click menu (fork addition, see links-host.js).
-  const linksPath = path.join(vendorDir, 'links.js');
-  const linksJs = fs.existsSync(linksPath) ? fs.readFileSync(linksPath, 'utf8') : '';
-  const linksCssPath = path.join(vendorDir, 'links.css');
-  const linksCss = fs.existsSync(linksCssPath) ? fs.readFileSync(linksCssPath, 'utf8') : '';
-  const injectedBody = body.replace(
-    V2_INJECT_RE,
-    '$1($2,{rehypePlugins:window.__KATEX_V2_LOADED?[window.__rehypeKatex]:[],' +
-    'remarkPlugins:[$3].concat(window.__KATEX_V2_LOADED?[window.__remarkBracketMath,window.__remarkMath]:[])'
-  );
   // The user's macros, if any. Emitted after KaTeX core (ingestion needs
   // window.katex) and before the math bundle (which consumes them at load).
   // No macros configured -> no block, and the patch is byte-for-byte what it
@@ -421,8 +622,9 @@ function applyPatch(extDir, vendorDir, macroPayload) {
     ? renderMacroBlock(macroPayload) + '\n'
     : '';
 
-  fs.writeFileSync(jsPath,
+  const patchedJs =
     `${PATCH_MARKER}\n${PATCH_VERSION_PREFIX}${EXTENSION_VERSION} */\n` +
+    (mathless ? `${MATHLESS_MARKER}\n` : '') +
     `/* KaTeX Core - MIT License - https://katex.org */\n${katexCore}\n` +
     (copyTex ? `/* KaTeX copy-tex extension (copy selection as LaTeX) - MIT License */\n${copyTex}\n` : '') +
     macroBlock +
@@ -430,11 +632,13 @@ function applyPatch(extDir, vendorDir, macroPayload) {
     (annotateJs ? `/* Claude Code Annotate */\n${annotateJs}\n` : '') +
     (linksJs ? `/* Claude Code file links */\n${linksJs}\n` : '') +
     `/* === End KaTeX Patch — Claude Code bundle (math plugins injected) follows === */\n` +
-    injectedBody
-  );
+    injectedBody;
+  // Compile without executing, before touching backups, fonts, or bundles.
+  new vm.Script(patchedJs, { filename: 'Claude Code patched webview' });
 
   // Patch index.css — KaTeX styles
   const katexCss = fs.readFileSync(path.join(vendorDir, 'katex.min.css'), 'utf8');
+  const sourceToggleCss = fs.readFileSync(path.join(__dirname, 'assets', 'source-toggle.css'), 'utf8');
   const cssPatch = `
 ${PATCH_CSS_MARKER}
 ${katexCss}
@@ -450,10 +654,29 @@ ${katexCss}
 .katex {
   font-size: 1.1em;
 }
+${sourceToggleCss.trimEnd()}
 ${annotateCss}
 ${linksCss}
 /* === End KaTeX CSS Patch === */`;
-  fs.appendFileSync(cssPath, cssPatch);
+  const fontsTarget = path.join(webviewDir, 'fonts');
+  const fontsSrc = path.join(vendorDir, 'fonts');
+  const fonts = fs.readdirSync(fontsSrc).map(font => ({
+    target: path.join(fontsTarget, font), body: fs.readFileSync(path.join(fontsSrc, font))
+  }));
+  const hadFonts = fs.existsSync(fontsTarget);
+  try {
+    fs.mkdirSync(fontsTarget, { recursive: true });
+    replaceFiles([
+      { target: jsPath + '.katex-bak', body },
+      { target: cssPath + '.katex-bak', body: originalCss },
+      ...fonts,
+      { target: cssPath, body: originalCss + cssPatch, expected: Buffer.from(cssBody) },
+      { target: jsPath, body: patchedJs, expected: Buffer.from(currentBody) },
+    ]);
+  } catch (error) {
+    if (!hadFonts) { try { fs.rmdirSync(fontsTarget); } catch { /* preserve the write error */ } }
+    throw error;
+  }
 
   return true;
 }
@@ -463,14 +686,21 @@ function removePatch(extDir) {
   const jsPath = path.join(webviewDir, 'index.js');
   const cssPath = path.join(webviewDir, 'index.css');
 
-  let restored = false;
-  for (const f of [jsPath, cssPath]) {
+  const files = [];
+  for (const [f, marker] of [[jsPath, PATCH_MARKER], [cssPath, PATCH_CSS_MARKER]]) {
     const bak = f + '.katex-bak';
-    if (fs.existsSync(bak)) {
-      fs.copyFileSync(bak, f);
-      restored = true;
+    if (!fs.existsSync(f)) continue;
+    const current = fs.readFileSync(f);
+    if (!current.toString('utf8').includes(marker)) continue;
+    const original = fs.readFileSync(bak, 'utf8');
+    if (original.includes(marker) || (f === jsPath && !original.trim())) {
+      throw new Error('Cannot restore Claude Code: its original backup is invalid.');
     }
+    if (f === jsPath) new vm.Script(original);
+    files.push({ target: f, body: original, expected: current });
   }
+  replaceFiles(files);
+  let restored = removePlanPatch(extDir) || files.length > 0;
 
   const fontsDir = path.join(webviewDir, 'fonts');
   if (fs.existsSync(fontsDir)) {
@@ -490,7 +720,9 @@ function canRestoreOriginals(extDir) {
   const cssBak = path.join(webviewDir, 'index.css.katex-bak');
   try {
     if (!fs.existsSync(jsBak) || !fs.existsSync(cssBak)) return false;
-    if (fs.readFileSync(jsBak, 'utf8').includes(PATCH_MARKER)) return false;
+    const original = fs.readFileSync(jsBak, 'utf8');
+    if (!original.trim() || original.includes(PATCH_MARKER)) return false;
+    new vm.Script(original);
     if (fs.readFileSync(cssBak, 'utf8').includes(PATCH_CSS_MARKER)) return false;
     return true;
   } catch {
@@ -506,10 +738,22 @@ function canRestoreOriginals(extDir) {
 //   'unsupported' - the react-markdown injection point was not found
 // May throw on filesystem errors from applyPatch/removePatch; callers handle.
 function ensurePatched(extDir, vendorDir, macroPayload) {
+  return patchWebview(extDir, vendorDir, macroPayload);
+}
+
+function patchWebview(extDir, vendorDir, macroPayload) {
   if (!isPatched(extDir)) {
     return applyPatch(extDir, vendorDir, macroPayload) ? 'fresh' : 'unsupported';
   }
   if (getPatchedVersion(extDir) === EXTENSION_VERSION) {
+    // Upstream can replace styles independently of JavaScript. Rebuild from
+    // the saved JS original, backing up the new stylesheet before patching it.
+    const cssPath = path.join(extDir, 'webview', 'index.css');
+    if (!fs.readFileSync(cssPath, 'utf8').includes(PATCH_CSS_MARKER)) {
+      if (!canRestoreOriginals(extDir)) return 'skipped';
+      const original = fs.readFileSync(path.join(extDir, 'webview', 'index.js.katex-bak'), 'utf8');
+      return applyPatch(extDir, vendorDir, macroPayload, original) ? 'refreshed' : 'unsupported';
+    }
     // Right build already patched. The macros may still have changed since the
     // last session — that is a rewrite of one delimited region, not a reason to
     // restore and re-apply the whole patch.
@@ -538,12 +782,8 @@ function ensurePatched(extDir, vendorDir, macroPayload) {
     console.warn('[Claude Code LaTeX] Webview carries a stale patch but the original backup is missing or invalid; leaving the existing patch in place.');
     return 'skipped';
   }
-  removePatch(extDir);
-  if (isPatched(extDir)) {
-    console.error('[Claude Code LaTeX] Restore did not clear the old patch; not re-applying.');
-    return 'skipped';
-  }
-  return applyPatch(extDir, vendorDir, macroPayload) ? 'refreshed' : 'unsupported';
+  const original = fs.readFileSync(path.join(extDir, 'webview', 'index.js.katex-bak'), 'utf8');
+  return applyPatch(extDir, vendorDir, macroPayload, original) ? 'refreshed' : 'unsupported';
 }
 
 // Reloads the Claude Code webview so an on-disk patch change takes effect
@@ -559,6 +799,16 @@ function reloadWebviewAndNotify(message) {
         vscode.commands.executeCommand('workbench.action.webview.reloadWebviewAction');
       } else if (choice === 'Reload Window') {
         vscode.commands.executeCommand('workbench.action.reloadWindow');
+      }
+    });
+}
+
+function reloadWindowAndNotify(message) {
+  return vscode.window
+    .showInformationMessage(message, 'Reload Window')
+    .then(function(choice) {
+      if (choice === 'Reload Window') {
+        return vscode.commands.executeCommand('workbench.action.reloadWindow');
       }
     });
 }
@@ -636,15 +886,28 @@ function activate(context) {
     try {
       const macroPayload = currentMacroPayload();
       const result = ensurePatched(extDir, vendorDir, macroPayload);
+      const planResult = syncPlanPreview(
+        extDir,
+        vendorDir,
+        macroPayload,
+        readPlanPreviewConfig()
+      );
       if (result === 'macros-updated') {
         reloadWebviewAndNotify(
           `Claude Code LaTeX macros updated — ${describeMacros(macroPayload, vendorDir)}. The webview was reloaded.`);
+      } else if ((result === 'fresh' || result === 'refreshed') && isMathless(extDir)) {
+        vscode.commands.executeCommand('workbench.action.webview.reloadWebviewAction');
+        notifyMathless();
       } else if (result === 'fresh') {
         reloadWebviewAndNotify('Claude Code LaTeX enabled. The webview was reloaded; reload again if any math still looks unrendered.');
       } else if (result === 'refreshed') {
         reloadWebviewAndNotify('Claude Code LaTeX updated. The webview was reloaded; reload again if any math still looks unrendered.');
       } else if (result === 'unsupported') {
         notifyUnsupported();
+      }
+      if (planResult === 'applied' || planResult === 'removed') {
+        reloadWindowAndNotify(
+          'Claude Code LaTeX changed plan approval view rendering. Reload the VS Code window to apply the change.');
       }
     } catch (e) {
       console.error('[Claude Code LaTeX] Auto-patch failed:', e);
@@ -666,7 +929,8 @@ function activate(context) {
         return;
       }
       try {
-        if (applyPatch(dir, vendorDir, currentMacroPayload())) {
+        if (ensurePatched(dir, vendorDir, currentMacroPayload()) !== 'unsupported') {
+          syncPlanPreview(dir, vendorDir, currentMacroPayload(), readPlanPreviewConfig());
           reloadWebviewAndNotify('Claude Code LaTeX enabled. The webview was reloaded; reload again if any math still looks unrendered.');
         } else {
           notifyUnsupported();
@@ -735,6 +999,10 @@ function activate(context) {
       vscode.window
         .showInformationMessage(
           'Claude Code LaTeX v' + EXTENSION_VERSION + '\n' + status +
+            '\nPlan approval view: ' +
+              (readPlanPreviewConfig()
+                ? (isPlanPatched(dir) ? 'enabled and active' : 'enabled, but not active')
+                : 'disabled') +
             '\nMacros: ' + describeMacros(currentMacroPayload(), vendorDir) +
             '\nClaude Code: ' + dir,
           ...actions
@@ -784,6 +1052,30 @@ function activate(context) {
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
 
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration(async function(event) {
+      if (!event.affectsConfiguration('claudeCodeKatex.renderPlanPreview')) return;
+      const dir = findClaudeCodeExtDir();
+      if (!dir) {
+        vscode.window.showErrorMessage('Claude Code extension not found.');
+        return;
+      }
+
+      const enabled = readPlanPreviewConfig();
+      const result = syncPlanPreview(dir, vendorDir, currentMacroPayload(), enabled);
+      refreshStatusBar();
+      if (result === 'failed' || result === 'skipped' || result === 'unsupported') {
+        vscode.window.showWarningMessage(
+          'Claude Code LaTeX could not change plan approval view rendering. See the extension logs for details.');
+        return;
+      }
+      await reloadWindowAndNotify(
+        'Claude Code LaTeX plan approval view rendering ' +
+          (enabled ? 'enabled' : 'disabled') +
+          '. Reload the VS Code window to apply the change.');
+    })
+  );
+
   // Watch for Claude Code extension changes (updates). A Claude Code update
   // installs a fresh (unpatched) webview; this re-patches it.
   context.subscriptions.push(
@@ -791,7 +1083,9 @@ function activate(context) {
       const dir = findClaudeCodeExtDir();
       if (dir) {
         try {
-          const result = ensurePatched(dir, vendorDir, currentMacroPayload());
+          const macroPayload = currentMacroPayload();
+          const result = ensurePatched(dir, vendorDir, macroPayload);
+          syncPlanPreview(dir, vendorDir, macroPayload, readPlanPreviewConfig());
           if (result === 'fresh' || result === 'refreshed' || result === 'macros-updated') {
             reloadWebviewAndNotify('Claude Code LaTeX re-applied after a Claude Code update. The webview was reloaded; reload again if any math still looks unrendered.');
           } else if (result === 'unsupported') {
@@ -818,6 +1112,14 @@ module.exports = { activate, deactivate };
 module.exports._test = {
   findClaudeCodeExtDir,
   isPatched,
+  isPlanPatched,
+  ensurePlanPatched,
+  syncPlanPreview,
+  removePlanPatch,
+  readPlanAssets,
+  readPlanPreviewConfig,
+  planBackupIsPristine,
+  writeFileAtomic,
   getPatchedVersion,
   canRestoreOriginals,
   applyPatch,
@@ -835,6 +1137,7 @@ module.exports._test = {
   PATCH_CSS_MARKER,
   PATCH_VERSION_PREFIX,
   V2_INJECT_RE,
+  injectMathPlugins,
   ISSUES_URL,
   resolveMacroPath,
   readMacroSources,
@@ -848,4 +1151,6 @@ module.exports._test = {
   MACRO_HASH_PREFIX,
   MACRO_LIMITS,
   BUNDLE_ANCHOR,
+  MATHLESS_MARKER,
+  isMathless,
 };

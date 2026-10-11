@@ -9,6 +9,7 @@ const mockShowErrorMessage = jest.fn();
 const mockExecuteCommand = jest.fn();
 const mockRegisterCommand = jest.fn().mockReturnValue({ dispose: jest.fn() });
 const mockOnDidChange = jest.fn().mockReturnValue({ dispose: jest.fn() });
+const mockOnDidChangeConfiguration = jest.fn().mockReturnValue({ dispose: jest.fn() });
 const mockGetExtension = jest.fn();
 const mockOpenExternal = jest.fn();
 const mockStatusBarItem = {
@@ -37,6 +38,7 @@ jest.mock('vscode', () => ({
   },
   workspace: {
     getConfiguration: mockGetConfiguration,
+    onDidChangeConfiguration: mockOnDidChangeConfiguration,
     workspaceFolders: undefined,
   },
   env: { openExternal: mockOpenExternal },
@@ -72,6 +74,13 @@ const FIXTURE_JS =
   'var tree=R.default.createElement(Md,{remarkPlugins:[gfm],components:{a:1}},src);\n' +
   'console.log("hello");';
 const FIXTURE_CSS = '/* original css */ body { margin: 0; }';
+const PLAN_HOST_SOURCE = [
+  'var wr={parse:function(s){return s}};',
+  'function Ta(){return "n0nce"}',
+  'var U_r=`<html><body><div id="content"></div></body></html>`;',
+  'function $_r(e){let t=wr.parse(e);return typeof t==="string"?t:""}',
+  'function F_r(){let e=Ta();return U_r.replaceAll("{{NONCE}}",e)}',
+].join('\n');
 // A bundle whose react-markdown call the patch can no longer locate.
 const FIXTURE_NO_INJECT =
   '// claude code with a reshaped bundle\nconsole.log("no injection point here");';
@@ -86,6 +95,7 @@ function setupFakeClaudeCodeExt(jsContent) {
   fs.mkdirSync(webviewDir, { recursive: true });
   fs.writeFileSync(path.join(webviewDir, 'index.js'), jsContent || FIXTURE_JS);
   fs.writeFileSync(path.join(webviewDir, 'index.css'), FIXTURE_CSS);
+  fs.writeFileSync(path.join(extDir, 'extension.js'), PLAN_HOST_SOURCE);
   return extDir;
 }
 
@@ -119,6 +129,7 @@ function makeStalePatch(fakeVersion) {
 
 const readJs = () => fs.readFileSync(path.join(extDir, 'webview', 'index.js'), 'utf8');
 const readCss = () => fs.readFileSync(path.join(extDir, 'webview', 'index.css'), 'utf8');
+const readHost = () => fs.readFileSync(path.join(extDir, 'extension.js'), 'utf8');
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'katex-test-'));
@@ -193,12 +204,86 @@ describe('applyPatch', () => {
     expect(fs.readFileSync(path.join(extDir, 'webview', 'index.css.katex-bak'), 'utf8')).toBe(FIXTURE_CSS);
   });
 
-  test('does not overwrite existing backups', () => {
+  test('refreshes the JavaScript backup after an in-place upstream update without duplicating CSS', () => {
     applyPatch(extDir, vendorDir);
     fs.writeFileSync(path.join(extDir, 'webview', 'index.js.katex-bak'), 'PRESERVED');
     fs.writeFileSync(path.join(extDir, 'webview', 'index.js'), FIXTURE_JS); // un-patch on disk
     applyPatch(extDir, vendorDir);
-    expect(fs.readFileSync(path.join(extDir, 'webview', 'index.js.katex-bak'), 'utf8')).toBe('PRESERVED');
+    expect(fs.readFileSync(path.join(extDir, 'webview', 'index.js.katex-bak'), 'utf8')).toBe(FIXTURE_JS);
+    expect(readCss().split(PATCH_CSS_MARKER)).toHaveLength(2);
+    removePatch(extDir);
+    expect(readJs()).toBe(FIXTURE_JS);
+    expect(readCss()).toBe(FIXTURE_CSS);
+  });
+
+  test('refreshes both originals after upstream replaces both bundles', () => {
+    applyPatch(extDir, vendorDir);
+    const nextJs = FIXTURE_JS + '\nvar upstream=2;';
+    const nextCss = FIXTURE_CSS + '\n.upstream {color: red}';
+    fs.writeFileSync(path.join(extDir, 'webview', 'index.js'), nextJs);
+    fs.writeFileSync(path.join(extDir, 'webview', 'index.css'), nextCss);
+    expect(applyPatch(extDir, vendorDir)).toBe(true);
+    removePatch(extDir);
+    expect(readJs()).toBe(nextJs);
+    expect(readCss()).toBe(nextCss);
+  });
+
+  test.each(['katex.min.css', 'remark-math-bundle.js', 'fonts'])(
+    'a missing asset (%s) leaves bundles and backup state untouched', asset => {
+      fs.rmSync(path.join(vendorDir, asset), { recursive: true });
+      expect(() => applyPatch(extDir, vendorDir)).toThrow();
+      expect(readJs()).toBe(FIXTURE_JS);
+      expect(readCss()).toBe(FIXTURE_CSS);
+      expect(fs.readdirSync(path.join(extDir, 'webview')).sort()).toEqual(['index.css', 'index.js']);
+    });
+
+  test('malformed vendor JavaScript is rejected before any mutation', () => {
+    fs.writeFileSync(path.join(vendorDir, 'remark-math-bundle.js'), 'function broken( {');
+    expect(() => applyPatch(extDir, vendorDir)).toThrow();
+    expect(readJs()).toBe(FIXTURE_JS);
+    expect(readCss()).toBe(FIXTURE_CSS);
+    expect(fs.readdirSync(path.join(extDir, 'webview')).sort()).toEqual(['index.css', 'index.js']);
+  });
+
+  test('a locked JavaScript file rolls back styles, fonts, and backups', () => {
+    const rename = fs.renameSync;
+    const spy = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (to === path.join(extDir, 'webview', 'index.js')) throw new Error('file locked');
+      return rename(from, to);
+    });
+    try { expect(() => applyPatch(extDir, vendorDir)).toThrow('file locked'); }
+    finally { spy.mockRestore(); }
+    expect(readJs()).toBe(FIXTURE_JS);
+    expect(readCss()).toBe(FIXTURE_CSS);
+    expect(fs.readdirSync(path.join(extDir, 'webview')).sort()).toEqual(['index.css', 'index.js']);
+  });
+
+  test('an upstream update during preparation is preserved', () => {
+    const write = fs.writeFileSync;
+    const nextJs = FIXTURE_JS + '\nvar newer=1;';
+    let changed = false;
+    const spy = jest.spyOn(fs, 'writeFileSync').mockImplementation((target, ...args) => {
+      if (!changed && String(target).endsWith('.tmp')) {
+        changed = true;
+        write(path.join(extDir, 'webview', 'index.js'), nextJs);
+      }
+      return write(target, ...args);
+    });
+    try { expect(() => applyPatch(extDir, vendorDir)).toThrow('changed while preparing'); }
+    finally { spy.mockRestore(); }
+    expect(readJs()).toBe(nextJs);
+    expect(readCss()).toBe(FIXTURE_CSS);
+    expect(fs.readdirSync(path.join(extDir, 'webview')).sort()).toEqual(['index.css', 'index.js']);
+  });
+
+  test('a patched stylesheet with an unrelated backup is refused', () => {
+    applyPatch(extDir, vendorDir);
+    fs.writeFileSync(path.join(extDir, 'webview', 'index.js'), FIXTURE_JS);
+    fs.writeFileSync(path.join(extDir, 'webview', 'index.css.katex-bak'), 'unrelated');
+    const css = readCss();
+    expect(() => applyPatch(extDir, vendorDir)).toThrow('backup does not match');
+    expect(readJs()).toBe(FIXTURE_JS);
+    expect(readCss()).toBe(css);
   });
 
   test('writes the patch marker and version stamp', () => {
@@ -355,6 +440,17 @@ describe('removePatch', () => {
     expect(isPatched(extDir)).toBe(false);
   });
 
+  test('does not downgrade files already replaced by an upstream update', () => {
+    applyPatch(extDir, vendorDir);
+    const nextJs = FIXTURE_JS + '\nvar upstream=3;';
+    const nextCss = FIXTURE_CSS + '\n.upstream {}';
+    fs.writeFileSync(path.join(extDir, 'webview', 'index.js'), nextJs);
+    fs.writeFileSync(path.join(extDir, 'webview', 'index.css'), nextCss);
+    removePatch(extDir);
+    expect(readJs()).toBe(nextJs);
+    expect(readCss()).toBe(nextCss);
+  });
+
   test('patch -> remove -> patch cycle works', () => {
     applyPatch(extDir, vendorDir);
     expect(isPatched(extDir)).toBe(true);
@@ -377,6 +473,16 @@ describe('removePatch', () => {
     applyPatch(extDir, vendorDir);
     fs.rmSync(path.join(extDir, 'webview', 'fonts'), { recursive: true });
     expect(() => removePatch(extDir)).not.toThrow();
+  });
+
+  test.each(['', 'function broken(', PATCH_MARKER])('refuses a corrupt JS backup without removing fonts: %s', backup => {
+    applyPatch(extDir, vendorDir);
+    const beforeJs = readJs(), beforeCss = readCss();
+    fs.writeFileSync(path.join(extDir, 'webview', 'index.js.katex-bak'), backup);
+    expect(() => removePatch(extDir)).toThrow();
+    expect(readJs()).toBe(beforeJs);
+    expect(readCss()).toBe(beforeCss);
+    expect(fs.existsSync(path.join(extDir, 'webview', 'fonts', 'KaTeX_Main.woff2'))).toBe(true);
   });
 });
 
@@ -477,6 +583,27 @@ describe('ensurePatched', () => {
     const before = fs.readFileSync(path.join(extDir, 'webview', 'index.js'));
     expect(ensurePatched(extDir, vendorDir)).toBe('current');
     expect(fs.readFileSync(path.join(extDir, 'webview', 'index.js')).equals(before)).toBe(true);
+  });
+
+  test('repairs a stylesheet-only upstream replacement and preserves its new original', () => {
+    applyPatch(extDir, vendorDir);
+    const nextCss = FIXTURE_CSS + '\n.upstream {}';
+    fs.writeFileSync(path.join(extDir, 'webview', 'index.css'), nextCss);
+    expect(ensurePatched(extDir, vendorDir)).toBe('refreshed');
+    expect(readCss().split(PATCH_CSS_MARKER)).toHaveLength(2);
+    removePatch(extDir);
+    expect(readJs()).toBe(FIXTURE_JS);
+    expect(readCss()).toBe(nextCss);
+  });
+
+  test('failed refresh preserves the old working patch', () => {
+    applyPatch(extDir, vendorDir);
+    makeStalePatch('0.0.1');
+    const js = readJs(), css = readCss();
+    fs.writeFileSync(path.join(vendorDir, 'remark-math-bundle.js'), 'function broken( {');
+    expect(() => ensurePatched(extDir, vendorDir)).toThrow();
+    expect(readJs()).toBe(js);
+    expect(readCss()).toBe(css);
   });
 
   test('"refreshed" for an older-version patch: restores then re-patches once', () => {
@@ -607,16 +734,63 @@ describe('activate', () => {
     expect(mockStatusBarItem.text).toMatch(/LaTeX/);
   });
 
-  test('pushes 8 disposables (4 commands + link handler + binary-file fix + status bar + onDidChange)', () => {
+  test('pushes 9 disposables (4 commands + link handler + binary-file fix + status bar + extension/config watchers)', () => {
     mockGetExtension.mockReturnValue({ extensionPath: extDir });
     activate(context);
-    expect(context.subscriptions.length).toBe(8);
+    expect(context.subscriptions.length).toBe(9);
   });
 
   test('registers an onDidChange watcher', () => {
     mockGetExtension.mockReturnValue({ extensionPath: extDir });
     activate(context);
     expect(mockOnDidChange).toHaveBeenCalled();
+  });
+
+  test('leaves the plan host untouched by default', () => {
+    mockGetExtension.mockReturnValue({ extensionPath: extDir });
+    activate(context);
+    expect(readHost()).toBe(PLAN_HOST_SOURCE);
+    expect(fs.existsSync(path.join(extDir, 'extension.js.katex-bak'))).toBe(false);
+  });
+
+  test('enabling plan rendering applies the host patch and offers Reload Window', async () => {
+    mockGetExtension.mockReturnValue({ extensionPath: extDir });
+    activate(context);
+    const changed = mockOnDidChangeConfiguration.mock.calls[0][0];
+    mockShowInformationMessage.mockClear();
+    mockShowInformationMessage.mockResolvedValueOnce('Reload Window');
+    setMacroConfig({ renderPlanPreview: true });
+
+    await changed({ affectsConfiguration: (name) => name === 'claudeCodeKatex.renderPlanPreview' });
+    await Promise.resolve();
+
+    expect(readHost()).toContain('KaTeX plan-preview patch');
+    expect(mockShowInformationMessage).toHaveBeenCalledWith(
+      expect.stringMatching(/enabled.*reload/i),
+      'Reload Window',
+    );
+    expect(mockExecuteCommand).toHaveBeenCalledWith('workbench.action.reloadWindow');
+  });
+
+  test('disabling plan rendering restores the host and offers Reload Window', async () => {
+    mockGetExtension.mockReturnValue({ extensionPath: extDir });
+    setMacroConfig({ renderPlanPreview: true });
+    activate(context);
+    expect(readHost()).toContain('KaTeX plan-preview patch');
+    const changed = mockOnDidChangeConfiguration.mock.calls[0][0];
+    mockShowInformationMessage.mockClear();
+    mockShowInformationMessage.mockResolvedValueOnce('Reload Window');
+    setMacroConfig({ renderPlanPreview: false });
+
+    await changed({ affectsConfiguration: (name) => name === 'claudeCodeKatex.renderPlanPreview' });
+    await Promise.resolve();
+
+    expect(readHost()).toBe(PLAN_HOST_SOURCE);
+    expect(mockShowInformationMessage).toHaveBeenCalledWith(
+      expect.stringMatching(/disabled.*reload/i),
+      'Reload Window',
+    );
+    expect(mockExecuteCommand).toHaveBeenCalledWith('workbench.action.reloadWindow');
   });
 
   test('handles Claude Code not being installed without throwing', () => {
@@ -1185,5 +1359,54 @@ describe('edge cases', () => {
   test('the patched bundle keeps the marker exactly once', () => {
     applyPatch(extDir, vendorDir);
     expect(readJs().split(PATCH_MARKER).length - 1).toBe(1);
+  });
+});
+
+// ============================================================
+// Fork: patch without math when the Markdown call cannot be found
+// ============================================================
+describe('math-free fallback (fork)', () => {
+  beforeEach(() => {
+    setupFakeClaudeCodeExt(FIXTURE_NO_INJECT);
+    setupFakeVendorDir();
+    fs.writeFileSync(path.join(vendorDir, 'annotate.js'), '/* annotate mock */');
+    fs.writeFileSync(path.join(vendorDir, 'annotate.css'), '/* annotate css mock */');
+  });
+
+  test('still patches in annotation, stamped as having no math, original code kept', () => {
+    expect(applyPatch(extDir, vendorDir)).toBe(true);
+    const js = readJs();
+    expect(js).toContain('/* annotate mock */');
+    expect(js).toContain(_test.MATHLESS_MARKER);
+    expect(js).toContain('console.log("no injection point here");');
+    expect(_test.isMathless(extDir)).toBe(true);
+    expect(readCss()).toContain('/* annotate css mock */');
+  });
+
+  test('a normal patch carries no such stamp', () => {
+    setupFakeClaudeCodeExt();
+    applyPatch(extDir, vendorDir);
+    expect(_test.isMathless(extDir)).toBe(false);
+  });
+
+  test('never patches an already-patched bundle a second time', () => {
+    applyPatch(extDir, vendorDir);
+    expect(applyPatch(extDir, vendorDir, undefined, readJs())).toBe(false);
+    expect(readJs().split(PATCH_MARKER).length - 1).toBe(1);
+  });
+
+  test('with neither annotation nor link scripts present, it touches nothing', () => {
+    fs.unlinkSync(path.join(vendorDir, 'annotate.js'));
+    expect(applyPatch(extDir, vendorDir)).toBe(false);
+    expect(readJs()).toBe(FIXTURE_NO_INJECT);
+  });
+
+  test('activation says math is off but annotation still works', () => {
+    mockGetExtension.mockReturnValue({ extensionPath: extDir });
+    activate({ extensionPath: tmpDir, subscriptions: [] });
+    expect(isPatched(extDir)).toBe(true);
+    expect(mockShowWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining('math rendering is off'), 'Check for Updates');
+    expect(mockExecuteCommand).toHaveBeenCalledWith('workbench.action.webview.reloadWebviewAction');
   });
 });

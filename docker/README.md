@@ -6,15 +6,34 @@ against a hand-maintained remote VS Code.
 
 | Level | What it exercises | Browser | Network | Claude auth |
 |------:|-------------------|:-------:|:-------:|:-----------:|
-| **1** | `jest` unit tests — patch lifecycle, injection regex, macro payload + macro ingestion | – | – | – |
-| **2** | The math pipeline through Claude Code's real react-markdown → remark-math → rehype-katex chain — the torture harness plus a second page carrying a user macro payload | ✓ | ✓ (CDN) | – |
-| **macros** | User macros resolving and rendering **inside** the real Claude Code webview in code-server | ✓ | ✓ | – |
+| **1** | `jest` unit tests — patch lifecycle and rollback, structural injection, macro payload + macro ingestion | – | – | – |
+| **2** | The math pipeline through Claude Code's real react-markdown → remark-math → rehype-katex chain — the torture harness, a second page carrying a user macro payload, and a third driving the plan approval view through real marked | ✓ | ✓ (CDN) | – |
+| **macros** | User macros and the source-reveal control running **inside** the real Claude Code webview in code-server | ✓ | ✓ | – |
+| **plan-toggle** | The default-off plan setting applying and restoring the host patch across real code-server window reloads | ✓ | ✓ | – |
 | **3** | The **real** extension patching the **real** Claude Code in code-server, asserting KaTeX renders in the live webview | ✓ | ✓ | ✓ |
 
 ## Build
 
+The GitHub `Claude Code compatibility` workflow checks pinned versions 2.1.288
+and 2.1.296 plus the latest available Open VSX version on pull requests, pushes
+to main, and manual runs. Each version runs activation and real-webview probes;
+the latest also runs unit and browser regression tests. No account token is
+needed. It also runs daily at 05:17 UTC against the latest Claude Code, testing
+both the current source and the latest published GitHub release VSIX. The
+published probe still runs if a source regression fails. A clean runner fetches
+upstream afresh, and failed runs retain browser evidence. Scheduled runs require
+the workflow to be on the repository's default branch.
+
+To probe a released VSIX locally, mount it read-only and set
+`EXTENSION_VSIX_PATH=/tmp/published.vsix` when running `smoke` or `macros`.
+
+Local `.env` files are excluded from both image and VSIX builds.
+
 ```sh
 docker build -t claude-code-katex-tests .
+
+# Pin an upstream version to reproduce a compatibility report:
+docker build --build-arg CLAUDE_CODE_VERSION=2.1.296 -t claude-code-katex-tests .
 ```
 
 ## Run
@@ -24,6 +43,7 @@ docker build -t claude-code-katex-tests .
 docker run --rm claude-code-katex-tests           # == "ci"
 docker run --rm claude-code-katex-tests 1         # jest only
 docker run --rm claude-code-katex-tests 2         # rendering harness only
+docker run --rm claude-code-katex-tests plan-toggle # plan opt-in lifecycle
 
 # Level 3 — real end-to-end. Needs Claude auth (see below).
 docker run --rm -e CLAUDE_CODE_OAUTH_TOKEN="$(claude setup-token)" \
@@ -90,7 +110,8 @@ consume it like normal usage); it never becomes a metered charge.
    and asserts `.katex` elements rendered with **zero** `.katex-error`. It then
    selects the first display formula, presses a real `Ctrl+C`, and asserts the
    copy event's payload is the `$$`-wrapped LaTeX source (copy-tex working in
-   the live webview).
+   the live webview). It also clicks a source-reveal button on a real reply,
+   checks the exact LaTeX, and presses Enter to restore the rendered equation.
 
 ## Notes / gotchas
 
@@ -113,6 +134,14 @@ consume it like normal usage); it never becomes a metered charge.
   If a future Claude Code reshapes this, `smoke` (which only checks the on-disk
   patch) still passes while `3` can't drive the chat — re-probe the webview DOM
   and update these selectors.
+- **The plan approval integration (issue #17) is off by default.** `smoke`
+  asserts ordinary activation leaves Claude Code's host `extension.js`
+  untouched and creates no host backup. The separate `plan-toggle` level edits
+  the real code-server setting, reloads the VS Code window, checks the host
+  patch and pristine backup appear when enabled, then checks disabling and
+  reloading restores the host byte-for-byte. Unit tests cover the interactive
+  reload prompt raised by a live setting change.
+
 - **`smoke` also covers user macros.** It merges a `claudeCodeKatex.macros`
   entry into code-server's user settings before launch and asserts the macro
   payload block and its hash reached the patched webview bundle — the whole
@@ -120,8 +149,10 @@ consume it like normal usage); it never becomes a metered charge.
 - **`macros` goes one step further, still without auth.** `docker/
   webview-macros.js` attaches to the real Claude Code webview, reads
   `__KATEX_MACRO_REPORT` from the page, and renders with the resolved macros
-  through the webview's own KaTeX. No Claude session is needed because the
-  webview bundle — and our ingestion — loads whether or not anyone is signed
-  in. It finds the frame by *our* globals (`__KATEX_V2_LOADED`), never by a
-  Claude Code selector, but it does need the view-focus command, which is why
-  it is a separate level: `smoke` must stay robust enough to gate CI.
+  through the webview's own KaTeX. It also runs the shipping rehype plugin on
+  display math and verifies the packaged source-toggle CSS and keyboard handler
+  inside that live frame. No Claude session is needed because the webview
+  bundle loads whether or not anyone is signed in. It finds the frame by *our*
+  globals (`__KATEX_V2_LOADED`), never by a Claude Code selector, but it does
+  need the view-focus command, which is why it is a separate level: `smoke`
+  must stay robust enough to gate CI.

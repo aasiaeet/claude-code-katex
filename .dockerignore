@@ -11,8 +11,11 @@ playwright-report
 .git
 .gitignore
 .claude
+.worktrees
 *.log
 .DS_Store
+.env
+.env.*
 
 # Backups produced by the on-disk patch (never relevant to a fresh build).
 *.katex-bak

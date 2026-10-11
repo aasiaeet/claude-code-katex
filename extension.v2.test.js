@@ -17,6 +17,17 @@ jest.mock('vscode', () => ({
 
 const { _test } = require('./extension');
 const VENDOR = path.join(__dirname, 'vendor');
+// The fork's vendor folder also carries the annotation and file-link scripts,
+// which make applyPatch fall back to a math-free patch instead of touching
+// nothing. Upstream's no-touch contract is tested against the math files alone.
+const MATH_ONLY_VENDOR = (() => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'katex-vendor-'));
+  for (const f of fs.readdirSync(VENDOR)) {
+    if (/^(annotate|links)\./.test(f)) continue;
+    fs.symlinkSync(path.join(VENDOR, f), path.join(d, f));
+  }
+  return d;
+})();
 
 // A minimal stand-in for Claude Code's webview bundle carrying the real
 // react-markdown call: createElement(<Markdown>,{remarkPlugins:[<gfm>],
@@ -29,6 +40,11 @@ const FIXTURE_WITH = 'var a=1;' +
 const FIXTURE_WITH_ALIAS = 'var a=1;' +
   'var el=b(QZ,{remarkPlugins:[GR],components:{a:1,pre:2}},Y);' +
   'console.log(el);';
+// 2.1.296: the helper chooses a Windows file-link plugin and URL transform.
+const FIXTURE_WITH_SPREAD = 'var pl0=[gfm],gl0=[gfm,windowsLinks];' +
+  'function ul0($,J){return $==="live"&&J==="windows"?' +
+  '{remarkPlugins:gl0,urlTransform:fileUrl}:{remarkPlugins:pl0,urlTransform:void 0}}' +
+  'var el=F(Markdown,{...ul0(links,platform),components:{a:1},children:source});';
 // A bundle whose react-markdown call shape the patch cannot find.
 const FIXTURE_WITHOUT = 'var a=1;var el=B8.default.createElement(Co,{components:{a:1}},Y);';
 
@@ -140,17 +156,87 @@ describe('applyPatch — injection point absent (unsupported)', () => {
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
   test('returns false', () => {
-    expect(_test.applyPatch(dir, VENDOR)).toBe(false);
+    expect(_test.applyPatch(dir, MATH_ONLY_VENDOR)).toBe(false);
   });
   test('touches nothing — no patch, no backup, no fonts', () => {
-    _test.applyPatch(dir, VENDOR);
+    _test.applyPatch(dir, MATH_ONLY_VENDOR);
     expect(readJs(dir)).toBe(FIXTURE_WITHOUT);
     expect(_test.isPatched(dir)).toBe(false);
     expect(fs.existsSync(path.join(dir, 'webview', 'index.js.katex-bak'))).toBe(false);
     expect(fs.existsSync(path.join(dir, 'webview', 'fonts'))).toBe(false);
   });
   test('ensurePatched reports "unsupported"', () => {
-    expect(_test.ensurePatched(dir, VENDOR)).toBe('unsupported');
+    expect(_test.ensurePatched(dir, MATH_ONLY_VENDOR)).toBe('unsupported');
+  });
+});
+
+describe('spread plugin props (Claude Code 2.1.296)', () => {
+  test.each(['windows', 'darwin', 'linux'])('preserves %s plugins and URL handling', (platform) => {
+    const patched = _test.injectMathPlugins(FIXTURE_WITH_SPREAD);
+    expect(patched).not.toBeNull();
+    const context = {
+      window: { __KATEX_V2_LOADED: true, __rehypeKatex: 'katex',
+        __remarkBracketMath: 'brackets', __remarkMath: 'math' },
+      gfm: 'gfm', windowsLinks: 'windows', fileUrl: 'url',
+      F: (_, props) => props, Markdown: {}, links: 'live', platform, source: '$x$',
+    };
+    vm.runInNewContext(patched, context);
+    expect(Array.from(context.el.remarkPlugins)).toEqual(
+      (platform === 'windows' ? ['gfm', 'windows'] : ['gfm']).concat(['brackets', 'math']));
+    expect(Array.from(context.el.rehypePlugins)).toEqual(['katex']);
+    expect(context.el.urlTransform).toBe(platform === 'windows' ? 'url' : undefined);
+    expect(context.el.children).toBe('$x$');
+    expect(context.el.components.a).toBe(1);
+  });
+
+  test('leaves helper props unchanged when the math bundle fails to load', () => {
+    const context = { window: {}, gfm: 'gfm', windowsLinks: 'windows', fileUrl: 'url',
+      F: (_, props) => props, Markdown: {}, links: 'live', platform: 'windows', source: '$x$' };
+    vm.runInNewContext(_test.injectMathPlugins(FIXTURE_WITH_SPREAD), context);
+    expect(Array.from(context.el.remarkPlugins)).toEqual(['gfm', 'windows']);
+    expect(context.el.rehypePlugins).toBeUndefined();
+    expect(context.el.urlTransform).toBe('url');
+  });
+
+  test('evaluates the helper once and appends to existing rehype plugins', () => {
+    const source = FIXTURE_WITH_SPREAD.replace('...ul0(links,platform)', '...props(links,platform)') +
+      'function props(a,b){calls++;return a?{remarkPlugins:[gfm],rehypePlugins:[existing]}:{remarkPlugins:[]}}';
+    const context = { calls: 0, window: { __KATEX_V2_LOADED: true, __rehypeKatex: 'katex',
+      __remarkBracketMath: 'brackets', __remarkMath: 'math' },
+      gfm: 'gfm', windowsLinks: 'windows', fileUrl: 'url', existing: 'existing',
+      F: (_, props) => props, Markdown: {}, links: 'live', platform: 'windows', source: '$x$' };
+    vm.runInNewContext(_test.injectMathPlugins(source), context);
+    expect(context.calls).toBe(1);
+    expect(Array.from(context.el.rehypePlugins)).toEqual(['existing', 'katex']);
+  });
+
+  test('accepts dollar signs in minified helper identifiers', () => {
+    expect(_test.injectMathPlugins(FIXTURE_WITH_SPREAD.replaceAll('ul0', '$l0'))).not.toBeNull();
+  });
+
+  test.each([
+    FIXTURE_WITH_SPREAD.replaceAll('remarkPlugins:', 'otherPlugins:'),
+    FIXTURE_WITH_SPREAD + FIXTURE_WITH_SPREAD,
+    FIXTURE_WITH_SPREAD + FIXTURE_WITH_ALIAS,
+    FIXTURE_WITH_ALIAS + FIXTURE_WITH_ALIAS,
+  ])('rejects unrelated or ambiguous call sites without touching disk', (source) => {
+    const dir = makeExtDir(source);
+    try {
+      expect(_test.applyPatch(dir, MATH_ONLY_VENDOR)).toBe(false);
+      expect(readJs(dir)).toBe(source);
+      expect(fs.existsSync(path.join(dir, 'webview', 'index.js.katex-bak'))).toBe(false);
+      expect(fs.existsSync(path.join(dir, 'webview', 'fonts'))).toBe(false);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('applies the full patch, compiles, and restores byte-identically', () => {
+    const dir = makeExtDir(FIXTURE_WITH_SPREAD);
+    try {
+      expect(_test.applyPatch(dir, VENDOR)).toBe(true);
+      expect(isValidJs(readJs(dir))).toBe(true);
+      _test.removePatch(dir);
+      expect(readJs(dir)).toBe(FIXTURE_WITH_SPREAD);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 });
 
@@ -161,25 +247,31 @@ describe('applyPatch — injection point absent (unsupported)', () => {
 // that.
 describe('applyPatch — against the real Claude Code bundle (if present)', () => {
   const candidates = (() => {
-    const base = path.join(os.homedir(), '.vscode-server', 'extensions');
     const out = [];
-    try {
-      for (const d of fs.readdirSync(base)) {
-        if (!d.startsWith('anthropic.claude-code-')) continue;
-        for (const f of ['webview/index.js.katex-bak', 'webview/index.js']) {
-          const p = path.join(base, d, f);
-          if (fs.existsSync(p) && !fs.readFileSync(p, 'utf8').includes(_test.PATCH_MARKER)) {
-            out.push(p); // a confirmed-pristine source
-            break;
+    const bases = [
+      path.join(os.homedir(), '.vscode', 'extensions'),
+      path.join(os.homedir(), '.vscode-server', 'extensions'),
+      path.join(os.homedir(), '.local', 'share', 'code-server', 'extensions'),
+    ];
+    for (const base of bases) {
+      try {
+        for (const d of fs.readdirSync(base)) {
+          if (!d.startsWith('anthropic.claude-code-')) continue;
+          for (const f of ['webview/index.js.katex-bak', 'webview/index.js']) {
+            const p = path.join(base, d, f);
+            if (fs.existsSync(p) && !fs.readFileSync(p, 'utf8').includes(_test.PATCH_MARKER)) {
+              out.push(p); // a confirmed-pristine source
+              break;
+            }
           }
         }
-      }
-    } catch { /* no extensions dir — skip */ }
+      } catch { /* no extensions dir — skip */ }
+    }
     return out;
   })();
 
-  (candidates.length ? test : test.skip)('patches a real bundle copy to valid JS', () => {
-    const real = fs.readFileSync(candidates[candidates.length - 1], 'utf8');
+  (candidates.length ? test.each(candidates) : test.skip)('patches a real bundle copy to valid JS: %s', (candidate) => {
+    const real = fs.readFileSync(candidate, 'utf8');
     const dir = makeExtDir(real);
     try {
       expect(_test.applyPatch(dir, VENDOR)).toBe(true);
